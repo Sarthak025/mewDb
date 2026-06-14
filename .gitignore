@@ -35,6 +35,7 @@
 *.lib
 
 # Executables
+bin/
 *.exe
 *.out
 *.app
@@ -67,3 +68,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+
+# formatting and vscode settings
+.vscode
+.clang-format
