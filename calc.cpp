@@ -12,7 +12,7 @@ void startRepl() {
 		if (expression == "exit" || expression == "quit")
 			break;
 
-		if (expression == "")
+		if (expression.empty())
 			continue;
 
 		std::stringstream ss;
