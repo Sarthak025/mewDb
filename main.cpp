@@ -2,6 +2,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "db_engine.h"
 
 std::string toUpperString(std::string s) {
 	std::transform(s.begin(), s.end(), s.begin(),
@@ -9,7 +10,16 @@ std::string toUpperString(std::string s) {
 	return s;
 }
 
-void startRepl() {
+bool checkForArguments(const int numOfAvailableArguments, const int numOfargumentsNeeded){
+	if(numOfargumentsNeeded != numOfAvailableArguments){
+		std::cout << "ERROR: Not enough arguments, Required " << numOfargumentsNeeded << " Arguments" << std::endl;
+		return false;
+	}
+
+	return true;
+}
+
+void startRepl(db_engine &Db) {
 	while (true) {
 		std::cout << "mew> ";
 
@@ -38,23 +48,55 @@ void startRepl() {
 			command.push_back(word);
 		}
 
+		int numOfArguments = (int)command.size() - 1;
+
 		// check for valid command
 		if (command[0] == "SET") {
-			std::cout << "Got Command : " << command[0] << std::endl;
+			if(!checkForArguments(numOfArguments, 2)) continue;
+
+			Db.set(command[1], command[2]);
+			std::cout << "OK" << std::endl;
+
 		} else if (command[0] == "GET") {
-			std::cout << "Got Command : " << command[0] << std::endl;
+			if(!checkForArguments(numOfArguments, 1)) continue;
+
+			std::optional<std::string> val = Db.get(command[1]);
+			if(val){
+				std::cout << "VALUE " << val.value() << std::endl;
+				
+			}else{
+				std::cout << "NOT_FOUND" << std::endl;
+			}
 
 		} else if (command[0] == "DELETE") {
-			std::cout << "Got Command : " << command[0] << std::endl;
+			if(!checkForArguments(numOfArguments, 1)) continue;
 
+			int deleteStatus = Db.del(command[1]);
+			if(deleteStatus){
+				std::cout << "OK" << std::endl;
+			}else{
+				std::cout << "NOT_FOUND" << std::endl;
+				
+			}
+			
 		} else if (command[0] == "EXISTS") {
-			std::cout << "Got Command : " << command[0] << std::endl;
+			if(!checkForArguments(numOfArguments, 1)) continue;
+
+			if(Db.exists(command[1])){
+				std::cout << "TRUE" << std::endl;
+			}else{
+				std::cout << "FALSE" << std::endl;
+			}
 
 		} else if (command[0] == "KEYS") {
-			std::cout << "Got Command : " << command[0] << std::endl;
+			if(!checkForArguments(numOfArguments, 0)) continue;
 
-		} else if (command[0] == "STATS") {
-			std::cout << "Got Command : " << command[0] << std::endl;
+			std::vector<std::string> fullData =  Db.keys();
+			for(const auto &data : fullData){
+				std::cout << data << std::endl;
+			}
+			std::cout << "END" << std::endl;
+
 		} else {
 			std::cout << "ERROR: unknown command" << std::endl;
 		}
@@ -63,6 +105,6 @@ void startRepl() {
 
 int main() {
 	std::cout << "..........Starting mewDb.........." << std::endl;
-
-	startRepl();
+	db_engine Db;
+	startRepl(Db);
 }
