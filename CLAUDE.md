@@ -47,9 +47,9 @@ CLI REPL → MemTable → WAL → SSTables → Compaction → Bloom Filters → 
 |-------|-------|--------|
 | 0 | Practice: Calculator REPL | ✅ Done |
 | 1 | CMake setup + CLI REPL + in-memory KV (`std::unordered_map`) | ✅ Done |
-| 2 | Ordered MemTable (`std::map`) + RANGE + PREFIX_SCAN | 🔄 In progress |
+| 2 | Ordered MemTable (`std::map`) + RANGE + PREFIX_SCAN | ✅ Done |
 | 3 | Write-Ahead Log (WAL) + crash recovery | ⬜ |
-| 3a | Practice: binary file encoder/decoder | ⬜ |
+| 3a | Practice: binary file encoder/decoder | 🔄 In progress |
 | 4 | SSTables + MemTable flush | ⬜ |
 | 5 | LSM Compaction | ⬜ |
 | 6 | Bloom filters + sparse index | ⬜ |
@@ -79,15 +79,16 @@ EXISTS name        → TRUE | FALSE
 KEYS               → one key per line + END
 ```
 
-**Current task:** Phase 2 — Ordered MemTable + RANGE + PREFIX_SCAN
+**Current task:** Phase 3a — Practice: binary file encoder/decoder (before building WAL)
 
-**What needs to change:**
-- Swap `std::unordered_map` → `std::map` in `db_engine` (gives sorted key order)
-- Add `RANGE <start> <end>` command → returns all key-value pairs where start ≤ key ≤ end, sorted
-- Add `PREFIX_SCAN <prefix>` command → returns all key-value pairs where key starts with prefix
-- Wire both new commands in `main.cpp`
+**What Phase 2 added:**
+- `std::map` replacing `unordered_map` — keys now sorted
+- `range(start, end)` — returns key-value pairs in [start, end] using `lower_bound` + forward iteration
+- `prefix_scan(prefix)` — returns key-value pairs where key starts with prefix using `string::compare`
+- Both commands wired in `main.cpp` with `END` terminator
 
-**Key concept to teach first:** Why sorted order matters — `unordered_map` gives O(1) lookup but no ordering guarantee. `std::map` (red-black tree) gives O(log n) but keys are always sorted. RANGE and PREFIX_SCAN are only efficient on sorted data.
+**Why the practice task before WAL:**
+WAL requires writing binary data to files — fixed-width integers, length-prefixed byte sequences. This is very different from `cout`. The practice task builds comfort with `fstream` binary mode, `reinterpret_cast`, and reading/writing raw bytes before adding the complexity of WAL semantics.
 
 ---
 

@@ -33,3 +33,29 @@ std::vector<std::string> db_engine::keys(){
     }
     return full_data;
 }
+
+std::vector<std::pair<std::string, std::string>> db_engine::range(const std::string &start, const std::string &end){
+    if(start > end){
+        return db_engine::range(end, start);
+    }
+
+    std::vector<std::pair<std::string, std::string>> data;
+    auto it = storage.lower_bound(start);
+    
+    while(it != storage.end() && it->first <= end){
+        data.push_back(*it);
+        it++;
+    }
+    return data;
+}
+
+std::vector<std::pair<std::string, std::string>> db_engine::prefix_scan(const std::string &prefix){
+    std::vector<std::pair<std::string, std::string>> data;
+    auto it = storage.lower_bound(prefix);
+
+    while(it != storage.end() && (it->first).compare(0, prefix.length(), prefix) == 0){
+        data.push_back(*it);
+        it++;
+    }
+    return data;
+}
