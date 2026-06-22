@@ -97,6 +97,23 @@ void startRepl(db_engine &Db) {
 			}
 			std::cout << "END" << std::endl;
 
+		} else if (command[0] == "RANGE"){
+			if(!checkForArguments(numOfArguments, 2)) continue;
+
+			std::vector<std::pair<std::string, std::string>> data = Db.range(command[1], command[2]);
+			for(const auto &d : data){
+				std::cout << d.first << " " << d.second << std::endl;
+			}
+			std::cout << "END" << std::endl;
+
+		} else if (command[0] == "PREFIX_SCAN") {
+			if(!checkForArguments(numOfArguments, 1)) continue;
+
+			std::vector<std::pair<std::string, std::string>> data = Db.prefix_scan(command[1]);
+			for(const auto &d : data){
+				std::cout << d.first << " " << d.second << std::endl;
+			}
+			std::cout << "END" << std::endl;
 		} else {
 			std::cout << "ERROR: unknown command" << std::endl;
 		}
