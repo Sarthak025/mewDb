@@ -2,7 +2,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <vector>
 #include <zlib.h>
 
 // WAL FORMAT
@@ -46,7 +45,7 @@ uint32_t calc_checksum(const wal_data &record) {
 	return crc;
 }
 
-bool write_record_v1(std::fstream &file, uint64_t index, uint8_t operation, std::string key, std::string val) {
+bool write_record_v1(std::fstream &file, uint64_t index, uint8_t operation, const std::string &key, const std::string &val) {
 
 	uint32_t magic_number = MAGIC_NUMBER;
 	uint8_t version_number = 1;
@@ -99,15 +98,13 @@ void recover(std::fstream &file) {
 
 		//Read key
 		file.read(reinterpret_cast<char*>(&record.key_len), sizeof(record.key_len));
-		std::string key(record.key_len, '\0');
-		file.read(reinterpret_cast<char*>(key.data()), record.key_len);
-		record.key = key;
+		record.key.resize(record.key_len);
+		file.read(reinterpret_cast<char*>(record.key.data()), record.key_len);
 		
 		//Read Value
 		file.read(reinterpret_cast<char*>(&record.val_len), sizeof(record.val_len));
-		std::string val(record.val_len, '\0');
-		file.read(reinterpret_cast<char*>(val.data()), record.val_len);
-		record.val = val;
+		record.val.resize(record.val_len);
+		file.read(reinterpret_cast<char*>(record.val.data()), record.val_len);
 
 		//Read the checksum
 		file.read(reinterpret_cast<char*>(&checksum), sizeof(checksum));
@@ -119,10 +116,10 @@ void recover(std::fstream &file) {
 
 
 		if(record.operation == SET){
-			std::cout << "SET : " << key << " : " << val <<'\n';
+			std::cout << "SET : " << record.key << " : " << record.val <<'\n';
 		}
 		else if(record.operation == DELETE) {
-			std::cout << "DELETE : " << key << '\n';
+			std::cout << "DELETE : " << record.key << '\n';
 		}
 	}
 
