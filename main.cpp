@@ -122,6 +122,6 @@ void startRepl(db_engine &Db) {
 
 int main() {
 	std::cout << "..........Starting mewDb.........." << std::endl;
-	db_engine Db;
+	db_engine Db("wal");
 	startRepl(Db);
 }

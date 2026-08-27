@@ -73,3 +73,5 @@ Testing/
 # formatting and vscode settings
 .vscode
 .clang-format
+
+wal

@@ -48,7 +48,7 @@ CLI REPL → MemTable → WAL → SSTables → Compaction → Bloom Filters → 
 | 0 | Practice: Calculator REPL | ✅ Done |
 | 1 | CMake setup + CLI REPL + in-memory KV (`std::unordered_map`) | ✅ Done |
 | 2 | Ordered MemTable (`std::map`) + RANGE + PREFIX_SCAN | ✅ Done |
-| 3 | Write-Ahead Log (WAL) + crash recovery | 🔄 In progress |
+| 3 | Write-Ahead Log (WAL) + crash recovery | ✅ Done |
 | 3a | Practice: binary file encoder/decoder | ✅ Done |
 | 3b | Practice: WAL write + recover standalone | ✅ Done |
 | 4 | SSTables + MemTable flush | ⬜ |
@@ -112,11 +112,24 @@ Key code patterns in `practice/wal.cpp`:
 - `write_record_v1` — builds struct, computes CRC, writes fields in order
 - `recover` — seeks to start, reads field-by-field, verifies CRC, prints ops
 
-**Next task: wire WAL into the real DB**
-1. Create `include/wal.h` and `src/wal.cpp` with a `WAL` class
-2. `db_engine` gets a `WAL` member
-3. Every `set()` and `del()` calls `wal.write(...)` before touching `std::map`
-4. On startup, `db_engine` calls `wal.recover(...)` to rebuild MemTable state
+**Phase 3 complete — WAL wired into db_engine**
+
+Files added:
+- `include/wal.h` — `wal` class declaration, forward declares `db_engine`
+- `src/wal.cpp` — full WAL implementation with `write()` and `recover()`
+
+Key design decisions:
+- `wal` owns the file — opens in constructor, closes in destructor
+- `db_engine` owns `wal*` via pointer (forward declaration requires pointer for member)
+- `recover()` calls `db.recover_set()` / `db.recover_del()` — private methods that bypass WAL writes during replay
+- `friend class wal` in `db_engine` grants access to those private methods
+- `wal_log_file.clear()` called after recovery to reset EOF flag before writes
+- WAL write must succeed before MemTable update (durability guarantee)
+- Sequence number updated to highest seen during recovery so new writes don't conflict
+
+All tests passing: basic recovery, DELETE recovery, overwrite recovery.
+
+**Next phase: SSTables + MemTable flush (Phase 4)**
 
 ---
 

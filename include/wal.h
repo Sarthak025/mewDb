@@ -6,14 +6,14 @@
 
 class db_engine;
 
-class WAL {
+class wal {
 private:
 	std::fstream wal_log_file;
 	uint64_t index = 0;
 
 public:
-	WAL(const std::string& filename);
-	~WAL();
+	wal(const std::string& filename);
+	~wal();
 
 	bool write(uint8_t operation, const std::string &key, const std::string &val);
 	void recover(db_engine& db);
