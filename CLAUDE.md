@@ -61,16 +61,22 @@ CLI REPL → MemTable → WAL → SSTables → Compaction → Bloom Filters → 
 
 ---
 
-## Current State (Phase 3 — WAL, in progress)
+## Current State (Phase 4 — SSTables, not started)
 
-**Phases 1 & 2 complete.** All files building and tested:
+**Phases 1, 2, 3 complete.** All files building and tested.
+
+### Completed files
 - `calc.cpp` — calculator REPL practice task
-- `CMakeLists.txt` — C++17, includes `src/db_engine.cpp`, exports compile commands
-- `include/db_engine.h` — `db_engine` class with `set`, `get`, `del`, `exists`, `keys`, `range`, `prefix_scan`
-- `src/db_engine.cpp` — implemented with `std::map<string, string>`
-- `main.cpp` — full REPL wired to `db_engine`, all responses match spec
+- `CMakeLists.txt` — C++17, `src/db_engine.cpp` + `src/wal.cpp`, links zlib (`-lz`)
+- `main.cpp` — full REPL, all commands wired, `db_engine Db("wal")`
+- `include/db_engine.h` — `db_engine` class, `friend class wal`, `recover_set/del` private
+- `src/db_engine.cpp` — `std::map` MemTable, WAL-first writes, WAL recovery on startup
+- `include/wal.h` — `wal` class, forward declares `db_engine`
+- `src/wal.cpp` — `write()`, `recover()`, `calc_checksum()`, `wal_data` struct
+- `practice/encoder.cpp` — binary encoder/decoder practice (complete)
+- `practice/wal.cpp` — standalone WAL write + recover practice (complete)
 
-**Correct response format (established):**
+### Correct response format
 ```
 SET name sarthak   → OK
 GET name           → VALUE sarthak
@@ -82,22 +88,11 @@ RANGE a z          → key value (one per line) + END
 PREFIX_SCAN user:  → key value (one per line) + END
 ```
 
-**Phase 3a & 3b complete — WAL practice (`practice/wal.cpp`)**
-
-Concepts understood:
-- Checksums vs cryptographic hashes — CRC32 for speed, not security ✅
-- Why WAL is append-only — sequential write performance + crash safety ✅
-- Magic numbers and version bytes ✅
-- Fixed-width unsigned types (`uint8_t`, `uint32_t`, `uint64_t`) ✅
-- Passing strings by `const&` to avoid copies ✅
-- Reading into `std::string` via `.data()` ✅
-- `file.clear()` needed before reopening a stream ✅
-
-WAL record format (user-designed and implemented):
+### WAL record format
 ```
 [magic_number]   uint32_t  4 bytes   (0xDEADBEEF)
 [version_number] uint8_t   1 byte
-[index]          uint64_t  8 bytes   (sequence number)
+[index]          uint64_t  8 bytes   (sequence number, auto-incremented by wal)
 [operation]      uint8_t   1 byte    (0=SET, 1=DELETE)
 [len_of_key]     uint32_t  4 bytes
 [val_of_key]     char[]    variable
@@ -106,30 +101,33 @@ WAL record format (user-designed and implemented):
 [checksum]       uint32_t  4 bytes   (CRC32 over version→val_of_data)
 ```
 
-Key code patterns in `practice/wal.cpp`:
-- `wal_data` struct holds all record fields including strings
-- `calc_checksum(const wal_data&)` — reusable by both write and recover
-- `write_record_v1` — builds struct, computes CRC, writes fields in order
-- `recover` — seeks to start, reads field-by-field, verifies CRC, prints ops
-
-**Phase 3 complete — WAL wired into db_engine**
-
-Files added:
-- `include/wal.h` — `wal` class declaration, forward declares `db_engine`
-- `src/wal.cpp` — full WAL implementation with `write()` and `recover()`
-
-Key design decisions:
-- `wal` owns the file — opens in constructor, closes in destructor
+### Key design decisions (WAL)
+- `wal` owns the file — opens in constructor (`binary|in|app`), closes in destructor
+- File created before open via temporary `ofstream` if it doesn't exist
 - `db_engine` owns `wal*` via pointer (forward declaration requires pointer for member)
-- `recover()` calls `db.recover_set()` / `db.recover_del()` — private methods that bypass WAL writes during replay
-- `friend class wal` in `db_engine` grants access to those private methods
-- `wal_log_file.clear()` called after recovery to reset EOF flag before writes
-- WAL write must succeed before MemTable update (durability guarantee)
-- Sequence number updated to highest seen during recovery so new writes don't conflict
+- `recover()` uses `db.recover_set()` / `db.recover_del()` — bypasses WAL during replay
+- `friend class wal` grants access to private `recover_set/del` methods
+- `wal_log_file.clear()` after recovery resets EOF flag before writes begin
+- WAL write must succeed before MemTable update (durability — the D in ACID)
+- `index` updated to highest seen sequence number during recovery
 
-All tests passing: basic recovery, DELETE recovery, overwrite recovery.
+### Concepts understood
+- CRC32 checksums vs cryptographic hashes ✅
+- Why WAL is append-only (sequential writes + crash safety) ✅
+- Magic numbers and version bytes ✅
+- Fixed-width unsigned types (`uint8_t`, `uint32_t`, `uint64_t`) ✅
+- Forward declarations and when to use pointers vs references ✅
+- `friend class` — grants private access to tightly coupled classes ✅
+- `file.clear()` to reset stream error/EOF flags ✅
+- Member variables vs function parameters (sizing implications) ✅
+- Why WAL grows forever and needs truncation after MemTable flush ✅ (discussed, not yet implemented)
 
-**Next phase: SSTables + MemTable flush (Phase 4)**
+### Open question for next session
+The WAL grows forever — every SET/DELETE appends a record. After a MemTable flush to SSTable, old WAL records are no longer needed. How should this be handled? (Answer: WAL truncation / checkpointing after flush — to be implemented alongside SSTables in Phase 4.)
+
+### Naming convention
+- snake_case for all classes and variables (e.g. `db_engine`, `wal`, `wal_data`)
+- Project headers use `#include "file.h"`, system headers use `#include <file>`
 
 ---
 
@@ -162,9 +160,11 @@ mewDb/
 ├── main.cpp               ← full REPL, all commands wired
 ├── calc.cpp               ← practice REPL (complete, not part of main build)
 ├── include/
-│   └── db_engine.h        ← db_engine class declaration (complete)
+│   ├── db_engine.h        ← db_engine class (friend class wal, recover_set/del)
+│   └── wal.h              ← wal class declaration
 ├── src/
-│   └── db_engine.cpp      ← db_engine implementation (complete, std::map)
+│   ├── db_engine.cpp      ← db_engine implementation (std::map + WAL integration)
+│   └── wal.cpp            ← WAL implementation (write, recover, checksum)
 ├── practice/
 │   ├── encoder.cpp        ← binary encoder/decoder practice (complete)
 │   └── wal.cpp            ← standalone WAL write + recover practice (complete)

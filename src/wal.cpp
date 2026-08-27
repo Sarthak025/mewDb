@@ -36,6 +36,7 @@ uint32_t calc_checksum(const wal_data &record) {
 }
 
 wal::wal(const std::string& filename){
+	{ std::ofstream create(filename, std::ios::binary | std::ios::app); }
     wal_log_file.open(filename, std::ios::binary | std::ios::in | std::ios::app);
     index = 0;
 }
@@ -49,7 +50,6 @@ bool wal::write(uint8_t operation, const std::string &key, const std::string &va
         return false;
     }
     
-    index++;
     uint32_t magic_number = MAGIC_NUMBER;
 	uint8_t version_number = 1;
 	uint32_t key_len = key.length();
@@ -78,7 +78,14 @@ bool wal::write(uint8_t operation, const std::string &key, const std::string &va
 	wal_log_file.write(val.c_str(), val_len);
 	wal_log_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
 
-    return wal_log_file.good();
+
+    if(wal_log_file.good()){
+		index++;
+		return true;
+	}
+	else{
+		return false;
+	}
 }
 
 void wal::recover(db_engine& db){
