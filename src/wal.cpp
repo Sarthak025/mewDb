@@ -1,14 +1,11 @@
 #include "db_engine.h"
 #include "wal.h"
+#include "constants.h"
 #include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <zlib.h>
-
-constexpr uint8_t SET = 0;
-constexpr uint8_t DELETE = 1;
-constexpr uint32_t MAGIC_NUMBER = 0xDEADBEEF;
 
 struct wal_data {
 	uint32_t magic_number;
@@ -51,7 +48,7 @@ bool wal::write(uint8_t operation, const std::string &key, const std::string &va
     }
     
     uint32_t magic_number = MAGIC_NUMBER;
-	uint8_t version_number = 1;
+	uint8_t version_number = VERSION;
 	uint32_t key_len = key.length();
 	uint32_t val_len = val.length();
 

@@ -71,7 +71,7 @@ void startRepl(db_engine &Db) {
 		} else if (command[0] == "DELETE") {
 			if(!checkForArguments(numOfArguments, 1)) continue;
 
-			int deleteStatus = Db.del(command[1]);
+			bool deleteStatus = Db.del(command[1]);
 			if(deleteStatus){
 				std::cout << "OK" << std::endl;
 			}else{

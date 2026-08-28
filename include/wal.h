@@ -17,4 +17,5 @@ public:
 
 	bool write(uint8_t operation, const std::string &key, const std::string &val);
 	void recover(db_engine& db);
+	bool truncate();
 };

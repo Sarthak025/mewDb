@@ -1,9 +1,7 @@
 #include "db_engine.h"
 #include "wal.h"
+#include "constants.h"
 #include <iostream>
-
-constexpr uint8_t SET = 0;
-constexpr uint8_t DELETE = 1;
 
 
 db_engine::db_engine(const std::string& wal_filename){
@@ -36,7 +34,7 @@ std::optional<std::string> db_engine::get(const std::string &key){
     return std::nullopt;
 }
 
-int db_engine::del(const std::string &key){
+bool db_engine::del(const std::string &key){
     if(wal_instance->write(DELETE, key, "")){
         // 1 for already present key, 0 for not found key
         return storage.erase(key);
