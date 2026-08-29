@@ -1,5 +1,6 @@
 #include "db_engine.h"
 #include "wal.h"
+#include "ss_table.h"
 #include "constants.h"
 #include <iostream>
 
@@ -23,7 +24,17 @@ void db_engine::recover_del(const std::string &key){
 
 void db_engine::set(const std::string &key, const std::string &val){
     if(wal_instance->write(SET, key, val)){
+
+        if(this->exists(key)){
+            mem_table_size -= key.length() + storage[key].length();
+        }
+
+        mem_table_size += key.length() + val.length();
         storage[key] = val;
+    }
+
+    if(mem_table_size >= MEM_TABLE_SIZE_LIMIT){
+        this->flush();
     }
 }
 
@@ -36,6 +47,9 @@ std::optional<std::string> db_engine::get(const std::string &key){
 
 bool db_engine::del(const std::string &key){
     if(wal_instance->write(DELETE, key, "")){
+        if(this->exists(key)){
+            mem_table_size -= key.length() + storage[key].length();
+        }
         // 1 for already present key, 0 for not found key
         return storage.erase(key);
     }
@@ -80,4 +94,13 @@ std::vector<std::pair<std::string, std::string>> db_engine::prefix_scan(const st
         it++;
     }
     return data;
+}
+
+void db_engine::flush(){
+    ss_table curr_ss_table(SS_TABLE_NAME, this->ss_table_index);
+    if(curr_ss_table.write_to_ss_table(storage) && wal_instance->truncate()){
+        this->ss_table_index++;
+        storage.clear();
+        mem_table_size = 0;
+    }
 }

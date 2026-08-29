@@ -8,6 +8,7 @@ class db_engine;
 
 class wal {
 private:
+	std::string wal_filename;
 	std::fstream wal_log_file;
 	uint64_t index = 0;
 

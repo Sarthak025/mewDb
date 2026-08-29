@@ -33,6 +33,7 @@ uint32_t calc_checksum(const wal_data &record) {
 }
 
 wal::wal(const std::string& filename){
+	wal_filename = filename;
 	{ std::ofstream create(filename, std::ios::binary | std::ios::app); }
     wal_log_file.open(filename, std::ios::binary | std::ios::in | std::ios::app);
     index = 0;
@@ -131,4 +132,17 @@ void wal::recover(db_engine& db){
 	}
 
 	wal_log_file.clear();
+}
+
+bool wal::truncate() {
+	wal_log_file.close();
+	{
+        std::ofstream truncate_file(wal_filename, std::ios::binary | std::ios::trunc);
+        if (!truncate_file) {
+            return false;
+        }
+    }
+    wal_log_file.open(wal_filename, std::ios::binary | std::ios::in | std::ios::app);
+
+	return wal_log_file.good();
 }
