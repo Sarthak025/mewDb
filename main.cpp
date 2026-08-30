@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include "db_engine.h"
+#include "constants.h"
 
 std::string toUpperString(std::string s) {
 	std::transform(s.begin(), s.end(), s.begin(),
@@ -122,6 +123,6 @@ void startRepl(db_engine &Db) {
 
 int main() {
 	std::cout << "..........Starting mewDb.........." << std::endl;
-	db_engine Db("wal");
+	db_engine Db(WAL_FILE_NAME);
 	startRepl(Db);
 }

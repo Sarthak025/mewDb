@@ -48,8 +48,8 @@ bool wal::write(uint8_t operation, const std::string &key, const std::string &va
         return false;
     }
     
-    uint32_t magic_number = MAGIC_NUMBER;
-	uint8_t version_number = VERSION;
+    uint32_t magic_number = WAL_MAGIC_NUMBER;
+	uint8_t version_number = WAL_VERSION;
 	uint32_t key_len = key.length();
 	uint32_t val_len = val.length();
 
@@ -95,7 +95,7 @@ void wal::recover(db_engine& db){
 
 	while(true){
 		wal_log_file.read(reinterpret_cast<char*>(&record.magic_number), sizeof(record.magic_number));
-		if(!wal_log_file || record.magic_number != MAGIC_NUMBER){
+		if(!wal_log_file || record.magic_number != WAL_MAGIC_NUMBER){
 			break;
 		}
 

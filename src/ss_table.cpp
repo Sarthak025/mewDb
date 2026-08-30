@@ -34,8 +34,8 @@ ss_table::~ss_table(){
 }
 
 bool ss_table::write_to_ss_table(const std::map<std::string, std::string> &mem_table){
-    uint32_t magic_number = MAGIC_NUMBER;
-    uint8_t version = VERSION;
+    uint32_t magic_number = SS_TABLE_MAGIC_NUMBER;
+    uint8_t version = SS_TABLE_VERSION;
     // ss_table_index
     uint64_t entry_count = static_cast<uint64_t>(mem_table.size());
 
