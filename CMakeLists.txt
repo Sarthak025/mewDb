@@ -10,6 +10,7 @@ add_executable(
     src/db_engine.cpp
     src/wal.cpp
     src/ss_table.cpp
+    src/manifest.cpp
 )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

@@ -18,6 +18,7 @@ constexpr uint8_t DELETE = 1;
 constexpr uint64_t MEM_TABLE_SIZE_LIMIT = 1e3;
 
 
-constexpr uint32_t MANIFEST_MAGIC_NUMBER = 0xDEADBEEF;
-constexpr uint8_t MANIFEST_VERSION = 1;
+inline const std::string MANIFEST_MAGIC_CONST = "MEWDB";
+constexpr uint32_t MANIFEST_VERSION = 1;
 inline const std::string MANIFEST_FILE_NAME = "data/manifest.txt";
+inline const std::string MANIFEST_TEMP_FILE_NAME = "data/temp_manifest.txt";
