@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <string>
 
+enum class open_mode {
+	read,
+    write
+};
+
 constexpr uint8_t WAL_VERSION = 1;
 constexpr uint8_t SS_TABLE_VERSION = 1;
 

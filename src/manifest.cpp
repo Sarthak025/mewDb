@@ -20,7 +20,7 @@ manifest::manifest(const std::string &file_name){
         // get MANIFEST_MAGIC_CONST
         getline(manifest_file, line);
         if(line != MANIFEST_MAGIC_CONST) {
-            throw std::runtime_error("Failed to open manifest file");
+            throw std::runtime_error("Failed to open manifest file...");
         }
 
         // get VERSION

@@ -11,7 +11,7 @@ class manifest;
 class db_engine {
 private:
 	friend class wal;
-	std::map<std::string, std::string> storage;
+	std::map<std::string, std::string> curr_memTable;
 	uint64_t mem_table_size = 0; //This is just the length of all the keys and vals
 	wal *wal_instance;
 	manifest *manifest_instance;

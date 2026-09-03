@@ -18,22 +18,22 @@ db_engine::~db_engine(){
 }
 
 void db_engine::recover_set(const std::string &key, const std::string &val){
-    storage[key] = val;
+    curr_memTable[key] = val;
 }
 
 void db_engine::recover_del(const std::string &key){
-    storage.erase(key);
+    curr_memTable.erase(key);
 }
 
 void db_engine::set(const std::string &key, const std::string &val){
     if(wal_instance->write(SET, key, val)){
 
         if(this->exists(key)){
-            mem_table_size -= key.length() + storage[key].length();
+            mem_table_size -= key.length() + curr_memTable[key].length();
         }
 
         mem_table_size += key.length() + val.length();
-        storage[key] = val;
+        curr_memTable[key] = val;
     }
 
     if(mem_table_size >= MEM_TABLE_SIZE_LIMIT){
@@ -44,8 +44,8 @@ void db_engine::set(const std::string &key, const std::string &val){
 }
 
 std::optional<std::string> db_engine::get(const std::string &key){
-    if(storage.find(key) != storage.end()){
-        return storage[key];
+    if(curr_memTable.find(key) != curr_memTable.end()){
+        return curr_memTable[key];
     }
     return std::nullopt;
 }
@@ -53,23 +53,23 @@ std::optional<std::string> db_engine::get(const std::string &key){
 bool db_engine::del(const std::string &key){
     if(wal_instance->write(DELETE, key, "")){
         if(this->exists(key)){
-            mem_table_size -= key.length() + storage[key].length();
+            mem_table_size -= key.length() + curr_memTable[key].length();
         }
         // 1 for already present key, 0 for not found key
-        return storage.erase(key);
+        return curr_memTable.erase(key);
     }
     return 0;
 }
 
 bool db_engine::exists(const std::string &key){
-    return storage.count(key);
+    return curr_memTable.count(key);
 }
 
 std::vector<std::string> db_engine::keys(){
     std::vector<std::string> full_data;
-    full_data.reserve((storage.size()));
+    full_data.reserve((curr_memTable.size()));
 
-    for(const auto &data : storage){
+    for(const auto &data : curr_memTable){
         full_data.push_back(data.first);
     }
     return full_data;
@@ -81,9 +81,9 @@ std::vector<std::pair<std::string, std::string>> db_engine::range(const std::str
     }
 
     std::vector<std::pair<std::string, std::string>> data;
-    auto it = storage.lower_bound(start);
+    auto it = curr_memTable.lower_bound(start);
     
-    while(it != storage.end() && it->first <= end){
+    while(it != curr_memTable.end() && it->first <= end){
         data.push_back(*it);
         it++;
     }
@@ -92,9 +92,9 @@ std::vector<std::pair<std::string, std::string>> db_engine::range(const std::str
 
 std::vector<std::pair<std::string, std::string>> db_engine::prefix_scan(const std::string &prefix){
     std::vector<std::pair<std::string, std::string>> data;
-    auto it = storage.lower_bound(prefix);
+    auto it = curr_memTable.lower_bound(prefix);
 
-    while(it != storage.end() && (it->first).compare(0, prefix.length(), prefix) == 0){
+    while(it != curr_memTable.end() && (it->first).compare(0, prefix.length(), prefix) == 0){
         data.push_back(*it);
         it++;
     }
@@ -103,9 +103,9 @@ std::vector<std::pair<std::string, std::string>> db_engine::prefix_scan(const st
 
 bool db_engine::flush(){
     uint64_t ss_table_index = manifest_instance->get_next_ss_table_index();
-    ss_table curr_ss_table(SS_TABLE_NAME, ss_table_index);
+    ss_table curr_ss_table(SS_TABLE_NAME, ss_table_index, open_mode::write);
 
-    if (!curr_ss_table.write_to_ss_table(storage)) {
+    if (!curr_ss_table.write_to_ss_table(curr_memTable)) {
         return false;
     }
 
@@ -117,7 +117,7 @@ bool db_engine::flush(){
         return false;
     }
 
-    storage.clear();
+    curr_memTable.clear();
     mem_table_size = 0;
 
     return true;
