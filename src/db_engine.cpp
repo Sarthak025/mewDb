@@ -2,16 +2,19 @@
 #include "wal.h"
 #include "ss_table.h"
 #include "constants.h"
+#include "manifest.h"
 #include <iostream>
 
 
-db_engine::db_engine(const std::string& wal_filename){
-    wal_instance = new wal(wal_filename);
+db_engine::db_engine(){
+    wal_instance = new wal(WAL_FILE_NAME);
     wal_instance->recover(*this);
+    manifest_instance = new manifest(MANIFEST_FILE_NAME);
 }
 
 db_engine::~db_engine(){
     delete wal_instance;
+    delete manifest_instance;
 }
 
 void db_engine::recover_set(const std::string &key, const std::string &val){
@@ -34,7 +37,9 @@ void db_engine::set(const std::string &key, const std::string &val){
     }
 
     if(mem_table_size >= MEM_TABLE_SIZE_LIMIT){
-        this->flush();
+        if(!(this->flush())){
+            // TODO: add log in future for flush failing
+        }
     }
 }
 
@@ -96,11 +101,24 @@ std::vector<std::pair<std::string, std::string>> db_engine::prefix_scan(const st
     return data;
 }
 
-void db_engine::flush(){
-    ss_table curr_ss_table(SS_TABLE_NAME, this->ss_table_index);
-    if(curr_ss_table.write_to_ss_table(storage) && wal_instance->truncate()){
-        this->ss_table_index++;
-        storage.clear();
-        mem_table_size = 0;
+bool db_engine::flush(){
+    uint64_t ss_table_index = manifest_instance->get_next_ss_table_index();
+    ss_table curr_ss_table(SS_TABLE_NAME, ss_table_index);
+
+    if (!curr_ss_table.write_to_ss_table(storage)) {
+        return false;
     }
+
+    if (!manifest_instance->add_new_ss_table_index(ss_table_index)) {
+        return false;
+    }
+
+    if (!wal_instance->truncate()) {
+        return false;
+    }
+
+    storage.clear();
+    mem_table_size = 0;
+
+    return true;
 }
