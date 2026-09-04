@@ -30,7 +30,7 @@ private:
 	std::fstream ss_table_file;
 
 public:
-	ss_table(const std::string &file_name, uint64_t table_index, open_mode mode);
+	ss_table(uint64_t table_index, open_mode mode);
 	~ss_table();
 
     bool write_to_ss_table(const std::map<std::string, std::string> &mem_table);

@@ -44,8 +44,20 @@ void db_engine::set(const std::string &key, const std::string &val){
 }
 
 std::optional<std::string> db_engine::get(const std::string &key){
+
+    // Check in curr_memTable
     if(curr_memTable.find(key) != curr_memTable.end()){
         return curr_memTable[key];
+    }
+
+    // Check in SS_Tables
+    std::vector<uint64_t> ss_table_indices = manifest_instance->get_ss_table_indices();
+    for (auto it = ss_table_indices.rbegin(); it != ss_table_indices.rend(); ++it){
+        ss_table curr_ss_table(*it, open_mode::read);
+        std::optional<std::string> val = curr_ss_table.get_value_from_ss_table(key);
+        if(val){
+            return val.value();
+        }
     }
     return std::nullopt;
 }
@@ -103,7 +115,7 @@ std::vector<std::pair<std::string, std::string>> db_engine::prefix_scan(const st
 
 bool db_engine::flush(){
     uint64_t ss_table_index = manifest_instance->get_next_ss_table_index();
-    ss_table curr_ss_table(SS_TABLE_NAME, ss_table_index, open_mode::write);
+    ss_table curr_ss_table(ss_table_index, open_mode::write);
 
     if (!curr_ss_table.write_to_ss_table(curr_memTable)) {
         return false;

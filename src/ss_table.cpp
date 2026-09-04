@@ -21,8 +21,8 @@ uint32_t key_val_checksum(uint32_t crc, const std::string &key, const std::strin
 
 
 
-ss_table::ss_table(const std::string &file_name, uint64_t table_index, open_mode mode){
-    ss_table_file_name = file_name + "_" + std::to_string(table_index) + ".bin";
+ss_table::ss_table(uint64_t table_index, open_mode mode){
+    ss_table_file_name = SS_TABLE_NAME + "_" + std::to_string(table_index) + ".bin";
     ss_table_index = table_index;
 
     if(mode == open_mode::read){
