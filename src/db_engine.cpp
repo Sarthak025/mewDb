@@ -111,6 +111,10 @@ std::vector<std::string> db_engine::keys(){
     return full_data;
 }
 
+bool db_engine::exists(const std::string &key){
+    return (this->get(key)).has_value();
+}
+
 std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::range(const std::string &start, const std::string &end){
     // TODO: add a search from ss_Table too
 

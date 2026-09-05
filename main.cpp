@@ -83,7 +83,7 @@ void startRepl(db_engine &Db) {
 		} else if (command[0] == "EXISTS") {
 			if(!checkForArguments(numOfArguments, 1)) continue;
 
-			if(Db.exists_in_curr_mem_table(command[1])){
+			if(Db.exists(command[1])){
 				std::cout << "TRUE" << std::endl;
 			}else{
 				std::cout << "FALSE" << std::endl;
