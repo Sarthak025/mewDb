@@ -11,7 +11,7 @@ struct wal_data {
 	uint32_t magic_number;
 	uint8_t version_number;
 	uint64_t index;
-	uint8_t operation;
+	operation operation;
 	uint32_t key_len;
 	std::string key;
 	uint32_t val_len;
@@ -43,8 +43,8 @@ wal::~wal(){
     wal_log_file.close();
 }
 
-bool wal::write(uint8_t operation, const std::string &key, const std::string &val){
-    if(operation != SET && operation!= DELETE) {
+bool wal::write(operation operation, const std::string &key, const std::string &val){
+    if(operation != operation::set && operation!= operation::del) {
         return false;
     }
     
@@ -122,10 +122,10 @@ void wal::recover(db_engine& db){
 		}
 
 
-		if(record.operation == SET){
+		if(record.operation == operation::set){
 			db.recover_set(record.key, record.val);
 		}
-		else if(record.operation == DELETE) {
+		else if(record.operation == operation::del) {
 			db.recover_del(record.key);
 		}
         index = record.index;

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <fstream>
 #include <string>
+#include "constants.h"
 
 class db_engine;
 
@@ -16,7 +17,7 @@ public:
 	wal(const std::string& filename);
 	~wal();
 
-	bool write(uint8_t operation, const std::string &key, const std::string &val);
+	bool write(operation operation, const std::string &key, const std::string &val);
 	void recover(db_engine& db);
 	bool truncate();
 };

@@ -7,10 +7,11 @@
 #include <cstdint>
 #include <zlib.h>
 
-uint32_t key_val_checksum(uint32_t crc, const std::string &key, const std::string &val) {
+uint32_t key_val_checksum(operation op, uint32_t crc, const std::string &key, const std::string &val) {
     uint32_t key_len = key.length();
 	uint32_t val_len = val.length();
 
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&op), sizeof(op));
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&key_len), sizeof(key_len));
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(key.c_str()), key_len);
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&val_len), sizeof(val_len));
@@ -43,7 +44,7 @@ ss_table::~ss_table(){
     ss_table_file.close();
 }
 
-bool ss_table::write_to_ss_table(const std::map<std::string, std::string> &mem_table){
+bool ss_table::write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table){
     uint32_t magic_number = SS_TABLE_MAGIC_NUMBER;
     uint8_t version = SS_TABLE_VERSION;
     // ss_table_index
@@ -63,16 +64,22 @@ bool ss_table::write_to_ss_table(const std::map<std::string, std::string> &mem_t
 	ss_table_file.write(reinterpret_cast<char *>(&entry_count), sizeof(entry_count));
 
     for(const auto &[key, val] : mem_table){
-        uint32_t key_len = key.length();
-	    uint32_t val_len = val.length();
+        operation op = (val.has_value()) ? operation::set : operation::del;
 
+        uint32_t key_len = key.length();
+	    uint32_t val_len = (val.has_value()) ? val.value().length() : 0;
+
+        ss_table_file.write(reinterpret_cast<char *>(&op),sizeof(op));
         ss_table_file.write(reinterpret_cast<char *>(&key_len), sizeof(key_len));
         ss_table_file.write(key.c_str(), key_len);
         ss_table_file.write(reinterpret_cast<char *>(&val_len), sizeof(val_len));
-        ss_table_file.write(val.c_str(), val_len);
 
-        crc = key_val_checksum(crc, key, val);
-        
+        if (val.has_value()) {
+            ss_table_file.write((val.value()).c_str(), val_len);
+            crc = key_val_checksum(op, crc, key, val.value());
+        } else {
+            crc = key_val_checksum(op, crc, key, "");
+        }
     }
 
     ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
@@ -81,9 +88,14 @@ bool ss_table::write_to_ss_table(const std::map<std::string, std::string> &mem_t
 
 }
 
-std::optional<std::string> ss_table::get_value_from_ss_table(const std::string &search_key){
+lookup_result ss_table::get_value_from_ss_table(const std::string &search_key){
 
-    std::optional<std::string> required_val;
+    lookup_result result = {
+        lookup_status::not_found,
+        std::nullopt
+    };
+
+    // Move to begining to the file
     ss_table_file.seekg(0, std::ios::beg);
 
     uint32_t magic_number;
@@ -111,10 +123,17 @@ std::optional<std::string> ss_table::get_value_from_ss_table(const std::string &
     //start reading entries from ss_table
 
     while (entry_count--) {
+        operation op;
         std::string key;
         std::string val;
         uint32_t key_len;
         uint32_t val_len;
+
+
+        // Read operation
+        if(!ss_table_file.read(reinterpret_cast<char*>(&op), sizeof(op))) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
 
         // Read key
         if (!ss_table_file.read(reinterpret_cast<char*>(&key_len), sizeof(key_len))) {
@@ -136,10 +155,17 @@ std::optional<std::string> ss_table::get_value_from_ss_table(const std::string &
             throw std::runtime_error("corrupted ss_table...");
         }
 
-        crc = key_val_checksum(crc, key, val);
+        crc = key_val_checksum(op, crc, key, val);
 
         if (key == search_key) {
-            required_val = val;
+            if(op == operation::del){
+                result.status = lookup_status::tombstone;
+                result.value = std::nullopt;
+            }
+            else if (op == operation::set){
+                result.status = lookup_status::found;
+                result.value = val;
+            }
         }
     }
 
@@ -150,5 +176,5 @@ std::optional<std::string> ss_table::get_value_from_ss_table(const std::string &
         throw std::runtime_error("checksum for ss_table didnt match during read...");
     }
 
-    return required_val;
+    return result;
 }

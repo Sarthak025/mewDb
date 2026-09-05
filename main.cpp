@@ -83,7 +83,7 @@ void startRepl(db_engine &Db) {
 		} else if (command[0] == "EXISTS") {
 			if(!checkForArguments(numOfArguments, 1)) continue;
 
-			if(Db.exists(command[1])){
+			if(Db.exists_in_curr_mem_table(command[1])){
 				std::cout << "TRUE" << std::endl;
 			}else{
 				std::cout << "FALSE" << std::endl;
@@ -101,18 +101,18 @@ void startRepl(db_engine &Db) {
 		} else if (command[0] == "RANGE"){
 			if(!checkForArguments(numOfArguments, 2)) continue;
 
-			std::vector<std::pair<std::string, std::string>> data = Db.range(command[1], command[2]);
+			std::vector<std::pair<std::string, std::optional<std::string>>> data = Db.range(command[1], command[2]);
 			for(const auto &d : data){
-				std::cout << d.first << " " << d.second << std::endl;
+				std::cout << d.first << " " << (d.second).value() << std::endl;
 			}
 			std::cout << "END" << std::endl;
 
 		} else if (command[0] == "PREFIX_SCAN") {
 			if(!checkForArguments(numOfArguments, 1)) continue;
 
-			std::vector<std::pair<std::string, std::string>> data = Db.prefix_scan(command[1]);
+			std::vector<std::pair<std::string, std::optional<std::string>>> data = Db.prefix_scan(command[1]);
 			for(const auto &d : data){
-				std::cout << d.first << " " << d.second << std::endl;
+				std::cout << d.first << " " << (d.second).value() << std::endl;
 			}
 			std::cout << "END" << std::endl;
 		} else {
