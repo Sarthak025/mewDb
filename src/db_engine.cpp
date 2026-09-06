@@ -116,16 +116,31 @@ bool db_engine::exists(const std::string &key){
 }
 
 std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::range(const std::string &start, const std::string &end){
-    // TODO: add a search from ss_Table too
 
     if(start > end){
         return db_engine::range(end, start);
     }
 
-    std::vector<std::pair<std::string, std::optional<std::string>>> data;
-    auto it = curr_mem_table.lower_bound(start);
+    // make copy of current mem_table
+    std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
     
-    while(it != curr_mem_table.end() && it->first <= end){
+    std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
+    for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
+        auto i = *it;
+        ss_table curr_ss_table(i, open_mode::read);
+        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_range_from_ss_tables(start, end);
+        
+        // merge to temp map
+        for(const auto &[key, val] : ss_table_records){
+            if(temp_mem_table.find(key) == temp_mem_table.end()){
+                temp_mem_table[key] = val;
+            }
+        } 
+    }
+    
+    std::vector<std::pair<std::string, std::optional<std::string>>> data;
+    auto it = temp_mem_table.lower_bound(start);
+    while(it != temp_mem_table.end() && it->first <= end){
         if((*it).second.has_value()){
             data.push_back(*it);
         }
@@ -135,12 +150,26 @@ std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::range
 }
 
 std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::prefix_scan(const std::string &prefix){
-    // TODO: add a search from ss_Table too
+
+    std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
+    
+    std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
+    for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
+        auto i = *it;
+        ss_table curr_ss_table(i, open_mode::read);
+        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_prefix_from_ss_tables(prefix);
+        
+        // merge to temp map
+        for(const auto &[key, val] : ss_table_records){
+            if(temp_mem_table.find(key) == temp_mem_table.end()){
+                temp_mem_table[key] = val;
+            }
+        } 
+    }
 
     std::vector<std::pair<std::string, std::optional<std::string>>> data;
-    auto it = curr_mem_table.lower_bound(prefix);
-
-    while(it != curr_mem_table.end() && (it->first).compare(0, prefix.length(), prefix) == 0){
+    auto it = temp_mem_table.lower_bound(prefix);
+    while(it != temp_mem_table.end() && (it->first).compare(0, prefix.length(), prefix) == 0){
         if((*it).second.has_value()){
             data.push_back(*it);
         }

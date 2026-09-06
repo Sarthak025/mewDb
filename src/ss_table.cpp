@@ -181,221 +181,184 @@ lookup_result ss_table::get_value_from_ss_table(const std::string &search_key){
 }
 
 
-std::map<std::string, std::optional<std::string>> ss_table::get_range_from_all_ss_tables(const std::string &start, const std::string &end){
-    
-    std::map<std::string, std::optional<std::string>> mpp;
+std::vector<std::pair<std::string, std::optional<std::string>>> ss_table::get_range_from_ss_tables(const std::string &start, const std::string &end){
 
-    manifest curr_manifest(MANIFEST_FILE_NAME);
-    std::vector<uint64_t> indices = curr_manifest.get_ss_table_indices();
+    std::map<std::string, std::optional<std::string>> temp_mpp;
+    ss_table_file.seekg(0, std::ios::beg);
 
-    for (auto j = indices.rbegin(); j != indices.rend(); ++j) {
-        auto i = *j;
-        std::map<std::string, std::optional<std::string>> temp_mpp;
+    uint32_t magic_number;
+    uint8_t version;
+    // ss_table_index
+    uint64_t entry_count;
 
-        std::string filename = SS_TABLE_NAME + "_" + std::to_string(i) + ".bin";
-        std::fstream curr_ss_table(filename, std::ios::in);
-        curr_ss_table.seekg(0, std::ios::beg);
+    //start calculating checksum
+    uint32_t crc = crc32(0L, Z_NULL, 0);
 
-        uint32_t magic_number;
-        uint8_t version;
-        // ss_table_index
-        uint64_t entry_count;
+    ss_table_file.read(reinterpret_cast<char *>(&magic_number), sizeof(magic_number));
 
-        //start calculating checksum
-        uint32_t crc = crc32(0L, Z_NULL, 0);
+    if(magic_number != SS_TABLE_MAGIC_NUMBER){
+        throw std::runtime_error("corrupted ss_table...");
+    }
 
-        curr_ss_table.read(reinterpret_cast<char *>(&magic_number), sizeof(magic_number));
+    ss_table_file.read(reinterpret_cast<char *>(&version), sizeof(version));
+    ss_table_file.read(reinterpret_cast<char *>(&ss_table_index), sizeof(ss_table_index));
+    ss_table_file.read(reinterpret_cast<char *>(&entry_count), sizeof(entry_count));
 
-        if(magic_number != SS_TABLE_MAGIC_NUMBER){
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&version), sizeof(version));
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&ss_table_index), sizeof(ss_table_index));
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&entry_count), sizeof(entry_count));
+
+    //start reading entries from ss_table
+    while (entry_count--) {
+        operation op;
+        std::string key;
+        std::string val;
+        uint32_t key_len;
+        uint32_t val_len;
+
+
+        // Read operation
+        if(!ss_table_file.read(reinterpret_cast<char*>(&op), sizeof(op))) {
             throw std::runtime_error("corrupted ss_table...");
         }
 
-        curr_ss_table.read(reinterpret_cast<char *>(&version), sizeof(version));
-        curr_ss_table.read(reinterpret_cast<char *>(&ss_table_index), sizeof(ss_table_index));
-        curr_ss_table.read(reinterpret_cast<char *>(&entry_count), sizeof(entry_count));
-
-        crc = crc32(crc, reinterpret_cast<const Bytef *>(&version), sizeof(version));
-        crc = crc32(crc, reinterpret_cast<const Bytef *>(&ss_table_index), sizeof(ss_table_index));
-        crc = crc32(crc, reinterpret_cast<const Bytef *>(&entry_count), sizeof(entry_count));
-
-        //start reading entries from ss_table
-
-        while (entry_count--) {
-            operation op;
-            std::string key;
-            std::string val;
-            uint32_t key_len;
-            uint32_t val_len;
-
-
-            // Read operation
-            if(!curr_ss_table.read(reinterpret_cast<char*>(&op), sizeof(op))) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            // Read key
-            if (!curr_ss_table.read(reinterpret_cast<char*>(&key_len), sizeof(key_len))) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            key.resize(key_len);
-            if (!curr_ss_table.read(key.data(), key_len)) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            // Read value
-            if (!curr_ss_table.read(reinterpret_cast<char*>(&val_len), sizeof(val_len))) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            val.resize(val_len);
-            if (!curr_ss_table.read(val.data(), val_len)) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            crc = key_val_checksum(op, crc, key, val);
-            
-            if (op == operation::set) {
-                temp_mpp[key] = val;
-            }
-            else if (op == operation::del) {
-                temp_mpp[key] = std::nullopt;
-            }
+        // Read key
+        if (!ss_table_file.read(reinterpret_cast<char*>(&key_len), sizeof(key_len))) {
+            throw std::runtime_error("corrupted ss_table...");
         }
 
+        key.resize(key_len);
+        if (!ss_table_file.read(key.data(), key_len)) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
+
+        // Read value
+        if (!ss_table_file.read(reinterpret_cast<char*>(&val_len), sizeof(val_len))) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
+
+        val.resize(val_len);
+        if (!ss_table_file.read(val.data(), val_len)) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
+
+        crc = key_val_checksum(op, crc, key, val);
         
-        uint32_t checksum;
-        curr_ss_table.read(reinterpret_cast<char *>(&checksum), sizeof(checksum));
-        
-        if(crc != checksum){
-            throw std::runtime_error("checksum for ss_table didnt match during read...");
+        if (op == operation::set) {
+            temp_mpp[key] = val;
         }
-        
-        // get range from individual ss_table
-        std::vector<std::pair<std::string, std::optional<std::string>>> data;
-        auto it = temp_mpp.lower_bound(start);
-        while(it != temp_mpp.end() && it->first <= end){
-            data.push_back(*it);
-            it++;
+        else if (op == operation::del) {
+            temp_mpp[key] = std::nullopt;
         }
-
-        // merge to global map
-        for(auto [key, val] : data){
-            if(mpp.find(key) != mpp.end()){
-                mpp[key] = val;
-            }
-        }
-
     }
-    return mpp;
+
+    uint32_t checksum;
+    ss_table_file.read(reinterpret_cast<char *>(&checksum), sizeof(checksum));
+    
+    if(crc != checksum){
+        throw std::runtime_error("checksum for ss_table didnt match during read...");
+    }
+    
+    // get range from individual ss_table
+    std::vector<std::pair<std::string, std::optional<std::string>>> data;
+    auto it = temp_mpp.lower_bound(start);
+    while(it != temp_mpp.end() && it->first <= end){
+        data.push_back(*it);
+        it++;
+    }
+
+    return data;
+
 }
 
 
-std::map<std::string, std::optional<std::string>> ss_table::get_prefix_from_all_ss_tables(const std::string &prefix){
-    std::map<std::string, std::optional<std::string>> mpp;
+std::vector<std::pair<std::string, std::optional<std::string>>> ss_table::get_prefix_from_ss_tables(const std::string &prefix){
 
-    manifest curr_manifest(MANIFEST_FILE_NAME);
-    std::vector<uint64_t> indices = curr_manifest.get_ss_table_indices();
+    std::map<std::string, std::optional<std::string>> temp_mpp;
+    ss_table_file.seekg(0, std::ios::beg);
 
-    for (auto j = indices.rbegin(); j != indices.rend(); ++j) {
-        auto i = *j;
-        std::map<std::string, std::optional<std::string>> temp_mpp;
+    uint32_t magic_number;
+    uint8_t version;
+    // ss_table_index
+    uint64_t entry_count;
 
-        std::string filename = SS_TABLE_NAME + "_" + std::to_string(i) + ".bin";
-        std::fstream curr_ss_table(filename, std::ios::in);
-        curr_ss_table.seekg(0, std::ios::beg);
+    //start calculating checksum
+    uint32_t crc = crc32(0L, Z_NULL, 0);
 
-        uint32_t magic_number;
-        uint8_t version;
-        // ss_table_index
-        uint64_t entry_count;
+    ss_table_file.read(reinterpret_cast<char *>(&magic_number), sizeof(magic_number));
 
-        //start calculating checksum
-        uint32_t crc = crc32(0L, Z_NULL, 0);
+    if(magic_number != SS_TABLE_MAGIC_NUMBER){
+        throw std::runtime_error("corrupted ss_table...");
+    }
 
-        curr_ss_table.read(reinterpret_cast<char *>(&magic_number), sizeof(magic_number));
+    ss_table_file.read(reinterpret_cast<char *>(&version), sizeof(version));
+    ss_table_file.read(reinterpret_cast<char *>(&ss_table_index), sizeof(ss_table_index));
+    ss_table_file.read(reinterpret_cast<char *>(&entry_count), sizeof(entry_count));
 
-        if(magic_number != SS_TABLE_MAGIC_NUMBER){
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&version), sizeof(version));
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&ss_table_index), sizeof(ss_table_index));
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&entry_count), sizeof(entry_count));
+
+    //start reading entries from ss_table
+
+    while (entry_count--) {
+        operation op;
+        std::string key;
+        std::string val;
+        uint32_t key_len;
+        uint32_t val_len;
+
+
+        // Read operation
+        if(!ss_table_file.read(reinterpret_cast<char*>(&op), sizeof(op))) {
             throw std::runtime_error("corrupted ss_table...");
         }
 
-        curr_ss_table.read(reinterpret_cast<char *>(&version), sizeof(version));
-        curr_ss_table.read(reinterpret_cast<char *>(&ss_table_index), sizeof(ss_table_index));
-        curr_ss_table.read(reinterpret_cast<char *>(&entry_count), sizeof(entry_count));
-
-        crc = crc32(crc, reinterpret_cast<const Bytef *>(&version), sizeof(version));
-        crc = crc32(crc, reinterpret_cast<const Bytef *>(&ss_table_index), sizeof(ss_table_index));
-        crc = crc32(crc, reinterpret_cast<const Bytef *>(&entry_count), sizeof(entry_count));
-
-        //start reading entries from ss_table
-
-        while (entry_count--) {
-            operation op;
-            std::string key;
-            std::string val;
-            uint32_t key_len;
-            uint32_t val_len;
-
-
-            // Read operation
-            if(!curr_ss_table.read(reinterpret_cast<char*>(&op), sizeof(op))) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            // Read key
-            if (!curr_ss_table.read(reinterpret_cast<char*>(&key_len), sizeof(key_len))) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            key.resize(key_len);
-            if (!curr_ss_table.read(key.data(), key_len)) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            // Read value
-            if (!curr_ss_table.read(reinterpret_cast<char*>(&val_len), sizeof(val_len))) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            val.resize(val_len);
-            if (!curr_ss_table.read(val.data(), val_len)) {
-                throw std::runtime_error("corrupted ss_table...");
-            }
-
-            crc = key_val_checksum(op, crc, key, val);
-            
-            if (op == operation::set) {
-                temp_mpp[key] = val;
-            }
-            else if (op == operation::del) {
-                temp_mpp[key] = std::nullopt;
-            }
+        // Read key
+        if (!ss_table_file.read(reinterpret_cast<char*>(&key_len), sizeof(key_len))) {
+            throw std::runtime_error("corrupted ss_table...");
         }
 
+        key.resize(key_len);
+        if (!ss_table_file.read(key.data(), key_len)) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
+
+        // Read value
+        if (!ss_table_file.read(reinterpret_cast<char*>(&val_len), sizeof(val_len))) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
+
+        val.resize(val_len);
+        if (!ss_table_file.read(val.data(), val_len)) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
+
+        crc = key_val_checksum(op, crc, key, val);
         
-        uint32_t checksum;
-        curr_ss_table.read(reinterpret_cast<char *>(&checksum), sizeof(checksum));
-        
-        if(crc != checksum){
-            throw std::runtime_error("checksum for ss_table didnt match during read...");
+        if (op == operation::set) {
+            temp_mpp[key] = val;
         }
-        
-        // get range from individual ss_table
-        std::vector<std::pair<std::string, std::optional<std::string>>> data;
-        auto it = temp_mpp.lower_bound(prefix);
-        while(it != temp_mpp.end() && (it->first).compare(0, prefix.length(), prefix) == 0){
-            data.push_back(*it);
-            it++;
+        else if (op == operation::del) {
+            temp_mpp[key] = std::nullopt;
         }
-
-        // merge to global map
-        for(auto [key, val] : data){
-            if(mpp.find(key) == mpp.end()){
-                mpp[key] = val;
-            }
-        }
-
     }
-    return mpp;
+
+    uint32_t checksum;
+    ss_table_file.read(reinterpret_cast<char *>(&checksum), sizeof(checksum));
+    
+    if(crc != checksum){
+        throw std::runtime_error("checksum for ss_table didnt match during read...");
+    }
+    
+    // get range from individual ss_table
+    std::vector<std::pair<std::string, std::optional<std::string>>> data;
+    auto it = temp_mpp.lower_bound(prefix);
+    while(it != temp_mpp.end() && (it->first).compare(0, prefix.length(), prefix) == 0){
+        data.push_back(*it);
+        it++;
+    }
+
+    return data;
 }
 

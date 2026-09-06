@@ -49,7 +49,7 @@ public:
 
     bool write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table);
 	lookup_result get_value_from_ss_table(const std::string &key);
-	std::map<std::string, std::optional<std::string>> get_range_from_all_ss_tables(const std::string &start, const std::string &end);
-	std::map<std::string, std::optional<std::string>> get_prefix_from_all_ss_tables(const std::string &prefix);
+	std::vector<std::pair<std::string, std::optional<std::string>>> get_range_from_ss_tables(const std::string &start, const std::string &end);
+	std::vector<std::pair<std::string, std::optional<std::string>>> get_prefix_from_ss_tables(const std::string &prefix);
 
 };
