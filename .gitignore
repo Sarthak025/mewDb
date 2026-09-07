@@ -74,4 +74,4 @@ Testing/
 .vscode
 .clang-format
 
-wal
+data/

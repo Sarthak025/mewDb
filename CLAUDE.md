@@ -27,8 +27,9 @@ A C++ LSM-tree key-value database built from scratch as a learning project.
 ```
 SET <key> <value>    → OK
 GET <key>            → VALUE <value> | NOT_FOUND
-DELETE <key>         → OK
+DELETE <key>         → OK | NOT_FOUND
 EXISTS <key>         → TRUE | FALSE
+KEYS                 → one key per line + END
 RANGE <start> <end>  → sorted key-value pairs + END
 PREFIX_SCAN <prefix> → matching key-value pairs + END
 STATS                → metrics summary
@@ -63,7 +64,7 @@ CLI REPL → MemTable → WAL → SSTables → Compaction → Bloom Filters → 
 
 ## Current State (Phase 5 — LSM Compaction, not started)
 
-**Phases 1–4 complete**, including the tombstone/delete fix (see below). All files building and tested. Full read/write cycle (WAL → MemTable → SSTable flush → SSTable read-back, tombstone-aware) works end-to-end and has been verified by actually building and running the project, not just reading the code. One deliberate loose end remains — see "Known gap, sequenced" below (`EXISTS`/`RANGE`/`PREFIX_SCAN` not yet searching SSTables) — before moving fully into Phase 5.
+**Phases 1–4 complete**, including the tombstone/delete fix and a full exhaustive-test pass (see "Exhaustive test pass" below). All files building and tested. Full read/write cycle (WAL → MemTable → SSTable flush → SSTable read-back, tombstone-aware) works end-to-end and has been verified by actually building and running the project, not just reading the code. No known gaps remain except one still-unverified fix — see "Open item before Phase 5" below.
 
 ### Completed files
 - `calc.cpp` — calculator REPL practice task
@@ -72,7 +73,7 @@ CLI REPL → MemTable → WAL → SSTables → Compaction → Bloom Filters → 
 - `include/constants.h` — every shared format constant lives here: `WAL_VERSION`/`WAL_MAGIC_NUMBER`, `SS_TABLE_VERSION`/`SS_TABLE_MAGIC_NUMBER`, `MANIFEST_VERSION`/`MANIFEST_MAGIC_CONST`, `enum class operation : uint8_t { set, del }` (replaces the old loose `SET`/`DELETE` constants, shared by WAL/`db_engine`/`ss_table`), file name constants (`WAL_FILE_NAME`, `SS_TABLE_NAME`, `MANIFEST_FILE_NAME`, `MANIFEST_TEMP_FILE_NAME` — all under `data/`), `MEM_TABLE_SIZE_LIMIT`, and the `open_mode` enum (`read`/`write`) used by `ss_table`
 - `include/db_engine.h` / `src/db_engine.cpp` — `db_engine` class; MemTable is `curr_mem_table` (renamed from `storage`), value type `std::optional<std::string>` (`nullopt` = tombstone); owns `wal*` and `manifest*` (no longer owns its own SSTable-index counter — always asks the manifest); `flush()` returns `bool`; public `exists()`/`get()`/`range()`/`prefix_scan()` all search SSTables (tombstone-aware), `exists_in_curr_mem_table()` is a private MemTable-only helper used internally by `set`/`del`/`recover_set`/`recover_del`
 - `include/wal.h` / `src/wal.cpp` — adds `truncate()` (close → reopen via `std::ofstream` with `trunc` → reopen `in|app`); `index` never resets, even across truncation (LSN-style, for future replication)
-- `include/ss_table.h` / `src/ss_table.cpp` — `write_to_ss_table()` (flush path, tombstone-aware); `get_value_from_ss_table()` (single-key read, returns the 3-state `lookup_result`); `get_range_from_ss_tables()`/`get_prefix_from_ss_tables()` (per-file multi-key read, returns tombstones included as `std::optional`-valued pairs — see below); `open_mode::read`/`write` selects read vs. write for the constructor. Note: the "open file, verify magic number, loop reading entries with per-read error checks, verify final checksum" block is now duplicated across all three read methods — flagged as a cleanup candidate, not yet done.
+- `include/ss_table.h` / `src/ss_table.cpp` — `write_to_ss_table()` (flush path, tombstone-aware); private `read_ss_table()` does the one shared "open file, verify magic number, verify `ss_table_index` matches the filename, loop reading entries with per-read error checks, verify final checksum" pass and returns an in-memory `ss_table_data`; `get_value_from_ss_table()` (single-key read, returns the 3-state `lookup_result`), `get_range_from_ss_table()`/`get_prefix_from_ss_table()`/`get_keys_from_ss_table()` (per-file multi-key read, returns tombstones included as `std::optional`-valued pairs) all now just call `read_ss_table()` once and operate on `data.records` — the old duplicated read-loop across all three read methods is gone. `open_mode::read`/`write` selects read vs. write for the constructor.
 - `include/manifest.h` / `src/manifest.cpp` — durable registry of valid SSTable indices (see below)
 - `practice/encoder.cpp` — binary encoder/decoder practice (complete)
 - `practice/wal.cpp` — standalone WAL write + recover practice (complete)
@@ -182,6 +183,23 @@ Updates are never in-place edits: `add_new_ss_table_index()` rewrites the whole 
 - snake_case for all classes and variables (e.g. `db_engine`, `wal`, `ss_table`, `manifest`)
 - Project headers use `#include "file.h"`, system headers use `#include <file>`
 - Shared format constants (magic numbers, versions, file names) live centrally in `constants.h`, never duplicated per-file
+
+### Exhaustive test pass — completed 2026-09-08, closes out Phase 4
+
+Before moving to Phase 5, ran a full adversarial test pass covering every command (`SET`/`GET`/`DELETE`/`EXISTS`/`KEYS`/`RANGE`/`PREFIX_SCAN`) and every edge case (empty DB, restarts, flush boundaries, torn writes), plus an architecture review. Found and fixed:
+
+1. **`KEYS` never searched SSTables** — only ever looked at `curr_mem_table`, so any key that had been flushed and evicted from memory silently disappeared from `KEYS` output even though `GET` could still find it. Fixed by giving `keys()` the same newest-to-oldest SSTable merge pattern already used by `range()`/`prefix_scan()`, via the new `get_keys_from_ss_table()` method (also reused by `del()` to check whether a key exists anywhere before returning `OK`/`NOT_FOUND`).
+2. **Two critical regressions in `wal::recover()`**, both introduced while trying to make WAL's error handling "consistent" with SSTable's throw-on-corruption policy, both caught by testing before being merged:
+   - The magic-number check (the loop's normal end-of-file / end-of-replay signal) was changed from `break` to `throw` — this crashed the program on **every single startup**, including a fresh empty database, because reaching EOF was being treated as corruption.
+   - The checksum-mismatch check was also changed from graceful-stop to `throw` — a checksum mismatch on the *last* record is the expected signature of a crash mid-write; throwing here would have permanently bricked the database after any ordinary crash, since every subsequent restart would hit the same torn record and refuse to start.
+   - **The lesson (general, not just for this bug):** don't reuse the same detection signal for both "normal loop termination" and "genuine corruption" without splitting the cases. For an *immutable, already-flushed* file (SSTable), any read failure really is corruption — throwing is correct. For a *replayed, append-only* log (WAL), reaching EOF and a torn trailing record are both **expected, routine outcomes** of replay, not failures — recovery must stop gracefully, not crash. Both regressions were reverted back to `break`, confirmed via rebuild + targeted tests (fresh empty-DB startup exits 0; a WAL truncated mid-last-record correctly recovers the earlier good entries, prints "Recovery stopped", and exits 0).
+3. Other fixes verified in the same pass: the REPL no longer busy-loops forever when stdin hits EOF without an `EXIT`/`QUIT` (`if (!std::cin) break;` added right after `getline`); `checkForArguments()`'s error message no longer says "Not enough arguments" for a too-many-arguments case.
+4. Architecture cleanup done in the same pass: `ss_table`'s three read methods deduped into one shared `read_ss_table()` (see above); `ss_table_index` is now validated against the SSTable's own filename on every read; naming fixed to consistently singular (`get_range_from_ss_table`, not `_ss_tables`); `.gitignore` now covers `data/` wholesale instead of a stale bare `wal` pattern. Deferred to Phase 5 (compaction's own concern): a `manifest::replace_ss_table_indices()` API for atomically swapping many old SSTable indices for one compacted one — the manifest stays append-only (`add_new_ss_table_index`) until then.
+
+All of the above were verified by actually rebuilding and running the project — piped stdin scenarios, simulated torn writes, full restart cycles — not by reading the code alone.
+
+### Open item before Phase 5
+**`EXIT`/`QUIT` still don't trim surrounding whitespace** before comparison (`main.cpp`, `startRepl`) — a padded exit command (e.g. trailing spaces) falls through to "unknown command" instead of exiting. Discussed: trimming a *copy* of `full_command` for just this one comparison is safe — it doesn't touch the tokenizer used for `SET`'s value parsing, and an empty-string value was already unrepresentable through the REPL before this discussion (the `stringstream >>` tokenizer already discards all whitespace). Not yet implemented as of this check — `main.cpp` lines 35–36 still compare the untrimmed `full_command` directly.
 
 ---
 

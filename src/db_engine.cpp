@@ -46,7 +46,7 @@ void db_engine::set(const std::string &key, const std::string &val){
 
     if(mem_table_size >= MEM_TABLE_SIZE_LIMIT){
         if(!(this->flush())){
-            // TODO: add log in future for flush failing
+            throw std::runtime_error("Error in flushing to disk...");
         }
     }
 }
@@ -74,18 +74,46 @@ std::optional<std::string> db_engine::get(const std::string &key){
 }
 
 bool db_engine::del(const std::string &key){
-    // TODO: to return false search in all ss_tables too
-    
-    if(wal_instance->write(operation::del, key, "")){
-        if(this->exists_in_curr_mem_table(key)){
-            mem_table_size -= key.length() + (curr_mem_table[key].value()).length();
-        }
-        curr_mem_table[key] = std::nullopt;
-        return true;
+    std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
+
+    std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
+    for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
+        auto i = *it;
+        ss_table curr_ss_table(i, open_mode::read);
+        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_keys_from_ss_table(key);
+        
+        // merge to temp map
+        for(const auto &[key, val] : ss_table_records){
+            if(temp_mem_table.find(key) == temp_mem_table.end()){
+                temp_mem_table[key] = val;
+            }
+        } 
     }
-    else{
+
+    
+    auto it1 = curr_mem_table.find(key);
+    auto it2 = temp_mem_table.find(key);
+    
+    bool present_in_curr_mem_table = it1 != curr_mem_table.end() && it1->second.has_value();
+    bool present_in_temp_mem_table = it2 != temp_mem_table.end() && it2->second.has_value();
+    
+    if (!present_in_temp_mem_table) {
+        return false;
+    }
+
+    if (!wal_instance->write(operation::del, key, "")) {
         throw std::runtime_error("Error in deleting key...");
     }
+
+    if (present_in_curr_mem_table) {
+        mem_table_size -= it1->second.value().length();
+    }
+    else{
+        mem_table_size += key.length();
+    }
+
+    curr_mem_table[key] = std::nullopt;
+    return true;
 }
 
 bool db_engine::exists_in_curr_mem_table(const std::string &key){
@@ -94,16 +122,30 @@ bool db_engine::exists_in_curr_mem_table(const std::string &key){
     if (it != curr_mem_table.end()) {
         return it->second.has_value();
     }
-
-    // TODO: need to add ss_table search later
     return false;
 }
 
 std::vector<std::string> db_engine::keys(){
-    std::vector<std::string> full_data;
-    full_data.reserve((curr_mem_table.size()));
 
-    for(const auto &data : curr_mem_table){
+    // make copy of current mem_table
+    std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
+    std::vector<std::string> full_data;
+
+    std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
+    for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
+        auto i = *it;
+        ss_table curr_ss_table(i, open_mode::read);
+        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_keys_from_ss_table();
+        
+        // merge to temp map
+        for(const auto &[key, val] : ss_table_records){
+            if(temp_mem_table.find(key) == temp_mem_table.end()){
+                temp_mem_table[key] = val;
+            }
+        } 
+    }
+
+    for(const auto &data : temp_mem_table){
         if(data.second.has_value()){
             full_data.push_back(data.first);
         }
@@ -128,7 +170,7 @@ std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::range
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
         ss_table curr_ss_table(i, open_mode::read);
-        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_range_from_ss_tables(start, end);
+        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_range_from_ss_table(start, end);
         
         // merge to temp map
         for(const auto &[key, val] : ss_table_records){
@@ -157,7 +199,7 @@ std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::prefi
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
         ss_table curr_ss_table(i, open_mode::read);
-        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_prefix_from_ss_tables(prefix);
+        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_prefix_from_ss_table(prefix);
         
         // merge to temp map
         for(const auto &[key, val] : ss_table_records){

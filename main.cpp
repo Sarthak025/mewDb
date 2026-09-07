@@ -13,7 +13,7 @@ std::string toUpperString(std::string s) {
 
 bool checkForArguments(const int numOfAvailableArguments, const int numOfargumentsNeeded){
 	if(numOfargumentsNeeded != numOfAvailableArguments){
-		std::cout << "ERROR: Not enough arguments, Required " << numOfargumentsNeeded << " Arguments" << std::endl;
+		std::cout << "ERROR: Not exact arguments, Required " << numOfargumentsNeeded << " Arguments" << std::endl;
 		return false;
 	}
 
@@ -27,6 +27,9 @@ void startRepl(db_engine &Db) {
 		// take input from user
 		std::string full_command;
 		getline(std::cin, full_command);
+		if (!std::cin) {
+			break;
+		}
 
 		// exit condition
 		if (toUpperString(full_command) == "EXIT" ||

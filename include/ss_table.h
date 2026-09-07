@@ -36,12 +36,29 @@ struct lookup_result {
     std::optional<std::string> value;  // meaningful only when status == found
 };
 
+struct record {
+    operation op;
+    uint32_t key_len;
+    std::string key;
+    uint32_t val_len;
+    std::optional<std::string> val;
+};
+
+struct ss_table_data {
+    uint32_t magic_num;
+    uint8_t version_num;
+    uint64_t ss_table_idx;
+    uint64_t entry_cnt;
+    std::vector<record> records;
+};
+
 
 class ss_table {
 private:
 	std::string ss_table_file_name;
 	uint64_t ss_table_index;
 	std::fstream ss_table_file;
+	ss_table_data read_ss_table();
 
 public:
 	ss_table(uint64_t table_index, open_mode mode);
@@ -49,7 +66,8 @@ public:
 
     bool write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table);
 	lookup_result get_value_from_ss_table(const std::string &key);
-	std::vector<std::pair<std::string, std::optional<std::string>>> get_range_from_ss_tables(const std::string &start, const std::string &end);
-	std::vector<std::pair<std::string, std::optional<std::string>>> get_prefix_from_ss_tables(const std::string &prefix);
+	std::vector<std::pair<std::string, std::optional<std::string>>> get_range_from_ss_table(const std::string &start, const std::string &end);
+	std::vector<std::pair<std::string, std::optional<std::string>>> get_prefix_from_ss_table(const std::string &prefix);
+    std::vector<std::pair<std::string, std::optional<std::string>>> get_keys_from_ss_table(const std::optional<std::string> &key = std::nullopt);
 
 };
