@@ -106,7 +106,7 @@ ss_table_data ss_table::read_ss_table() {
 
 
 ss_table::ss_table(uint64_t table_index, open_mode mode){
-    ss_table_file_name = SS_TABLE_NAME + "_" + std::to_string(table_index) + ".bin";
+    ss_table_file_name = SS_TABLE_FILE_NAME + "_" + std::to_string(table_index) + ".bin";
     ss_table_index = table_index;
 
     if(mode == open_mode::read){

@@ -192,7 +192,7 @@ std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::range
 }
 
 std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::prefix_scan(const std::string &prefix){
-
+    // make copy of current mem_table
     std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
     
     std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
