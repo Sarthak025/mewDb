@@ -14,7 +14,7 @@ private:
 	uint64_t index = 0;
 
 public:
-	wal(const std::string& filename);
+	wal();
 	~wal();
 
 	bool write(operation operation, const std::string &key, const std::string &val);

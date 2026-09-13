@@ -7,9 +7,9 @@
 
 
 db_engine::db_engine(){
-    wal_instance = new wal(WAL_FILE_NAME);
+    wal_instance = new wal();
     wal_instance->recover(*this);
-    manifest_instance = new manifest(MANIFEST_FILE_NAME);
+    manifest_instance = new manifest();
 }
 
 db_engine::~db_engine(){

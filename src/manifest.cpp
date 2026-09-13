@@ -7,13 +7,41 @@
 #include <filesystem>
 #include <iostream>
 
+std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const std::vector<uint64_t> &remove) {
+    std::vector<uint64_t> result;
 
-manifest::manifest(const std::string &file_name){
-    manifest_file_name = file_name;
+    uint64_t i = 0;
+    uint64_t j = 0;
 
-    if (std::filesystem::is_regular_file(file_name)) {
+    while(i < curr.size() && j < remove.size()){
+
+        if(curr[i] == remove[j]){
+            i++;
+            j++;
+        }
+        else if(curr[i] < remove[j]){
+            result.push_back(curr[i]);
+            i++;
+        }
+        else{
+            j++;
+        }
+    }
+
+    while(i < curr.size()){
+        result.push_back(curr[i]);
+        i++;
+    }
+
+    return result;
+}
+
+manifest::manifest(){
+    manifest_file_name = MANIFEST_FILE_NAME;
+
+    if (std::filesystem::is_regular_file(manifest_file_name)) {
         //manifest already exists
-        manifest_file.open(file_name, std::ios::in);
+        manifest_file.open(manifest_file_name, std::ios::in);
 
         std::string line;
 
@@ -42,18 +70,20 @@ manifest::manifest(const std::string &file_name){
         next_ss_table_index = 0;
         num_ss_tables = 0;
 
-        manifest_file.open(file_name, std::ios::out);
+        manifest_file.open(manifest_file_name, std::ios::out);
         manifest_file << MANIFEST_MAGIC_CONST << std::endl;
         manifest_file << MANIFEST_VERSION << std::endl;
         manifest_file << next_ss_table_index << std::endl;
         manifest_file << num_ss_tables << std::endl;
 
         manifest_file.close();
-        manifest_file.open(file_name, std::ios::in);
+        manifest_file.open(manifest_file_name, std::ios::in);
     }
 }
 
+
 manifest::~manifest(){}
+
 
 std::vector<uint64_t> manifest::get_ss_table_indices(){
     manifest_file.clear();
@@ -84,9 +114,11 @@ std::vector<uint64_t> manifest::get_ss_table_indices(){
     return available_indices;
 }
 
+
 uint64_t manifest::get_next_ss_table_index(){
     return next_ss_table_index;
 }
+
 
 bool manifest::add_new_ss_table_index(uint64_t idx){
 
@@ -117,6 +149,39 @@ bool manifest::add_new_ss_table_index(uint64_t idx){
     manifest_file.close();
     std::filesystem::rename(MANIFEST_TEMP_FILE_NAME, manifest_file_name);
     manifest_file.open(manifest_file_name, std::ios::in);
+    
+    return manifest_file.good();
+}
+
+
+bool manifest::replace_ss_table_indices(std::vector<uint64_t> &old_indices, uint64_t new_index){
+    std::vector<uint64_t> curr_indices = this->get_ss_table_indices();
+    std::vector<uint64_t> final_indices = subtract_vectors(curr_indices, old_indices);
+
+    final_indices.push_back(new_index);
+
+    this->num_ss_tables = final_indices.size();
+    this->next_ss_table_index = new_index + 1;
+
+    std::fstream temp_manifest_file(MANIFEST_TEMP_FILE_NAME, std::ios::out);
+    temp_manifest_file << MANIFEST_MAGIC_CONST << std::endl;
+    temp_manifest_file << MANIFEST_VERSION << std::endl;
+    temp_manifest_file << next_ss_table_index << std::endl;
+    temp_manifest_file << num_ss_tables << std::endl;
+
+    for(auto i : final_indices){
+        temp_manifest_file << i << std::endl;
+    }
+
+    temp_manifest_file.flush();
+    if (!temp_manifest_file) {
+        return false;
+    }
+    
+    //rename to temp mainfest file to original
+    manifest_file.close();
+    std::filesystem::rename(MANIFEST_TEMP_FILE_NAME, MANIFEST_FILE_NAME);
+    manifest_file.open(MANIFEST_FILE_NAME, std::ios::in);
     
     return manifest_file.good();
 }

@@ -32,10 +32,10 @@ uint32_t calc_checksum(const wal_data &record) {
 	return crc;
 }
 
-wal::wal(const std::string& filename){
-	wal_filename = filename;
-	{ std::ofstream create(filename, std::ios::binary | std::ios::app); }
-    wal_log_file.open(filename, std::ios::binary | std::ios::in | std::ios::app);
+wal::wal(){
+	wal_filename = WAL_FILE_NAME;
+	{ std::ofstream create(wal_filename, std::ios::binary | std::ios::app); }
+    wal_log_file.open(wal_filename, std::ios::binary | std::ios::in | std::ios::app);
     index = 0;
 }
 
