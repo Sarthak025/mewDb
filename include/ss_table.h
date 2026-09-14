@@ -58,16 +58,16 @@ private:
 	std::string ss_table_file_name;
 	uint64_t ss_table_index;
 	std::fstream ss_table_file;
-	ss_table_data read_ss_table();
-
-public:
+    
+    public:
 	ss_table(uint64_t table_index, open_mode mode);
 	~ss_table();
-
+    
     bool write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table);
 	lookup_result get_value_from_ss_table(const std::string &key);
 	std::vector<std::pair<std::string, std::optional<std::string>>> get_range_from_ss_table(const std::string &start, const std::string &end);
 	std::vector<std::pair<std::string, std::optional<std::string>>> get_prefix_from_ss_table(const std::string &prefix);
     std::vector<std::pair<std::string, std::optional<std::string>>> get_keys_from_ss_table(const std::optional<std::string> &key = std::nullopt);
+	ss_table_data read_ss_table();
 
 };

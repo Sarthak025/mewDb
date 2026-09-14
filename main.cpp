@@ -20,6 +20,18 @@ bool checkForArguments(const int numOfAvailableArguments, const int numOfargumen
 	return true;
 }
 
+std::string trim(std::string s) {
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }));
+
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }).base(), s.end());
+
+    return s;
+}
+
 void startRepl(db_engine &Db) {
 	while (true) {
 		std::cout << "mew> ";
@@ -32,8 +44,8 @@ void startRepl(db_engine &Db) {
 		}
 
 		// exit condition
-		if (toUpperString(full_command) == "EXIT" ||
-			toUpperString(full_command) == "QUIT")
+		if (trim(toUpperString(full_command)) == "EXIT" ||
+			trim(toUpperString(full_command)) == "QUIT")
 			break;
 		if (full_command.empty())
 			continue;
@@ -118,6 +130,17 @@ void startRepl(db_engine &Db) {
 				std::cout << d.first << " " << (d.second).value() << std::endl;
 			}
 			std::cout << "END" << std::endl;
+
+		} else if (command[0] == "COMPACT") {
+			if(!checkForArguments(numOfArguments, 0)) continue;
+			
+			if(Db.compact()){
+				std::cout << "COMPACTION SUCCESSFUL" << std::endl;
+			}
+			else{
+				std::cout << "ERROR: COMPACTION FAILED" <<std::endl;
+			}
+
 		} else {
 			std::cout << "ERROR: unknown command" << std::endl;
 		}

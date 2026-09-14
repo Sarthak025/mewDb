@@ -29,5 +29,5 @@ public:
     std::vector<uint64_t> get_ss_table_indices();
     uint64_t get_next_ss_table_index();
     bool add_new_ss_table_index(uint64_t index);
-    bool replace_ss_table_indices(std::vector<uint64_t> &old_indices, uint64_t new_index);
+    bool replace_ss_table_indices(const std::vector<uint64_t> &old_indices, uint64_t new_index);
 };

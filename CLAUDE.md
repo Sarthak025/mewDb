@@ -32,6 +32,7 @@ EXISTS <key>         → TRUE | FALSE
 KEYS                 → one key per line + END
 RANGE <start> <end>  → sorted key-value pairs + END
 PREFIX_SCAN <prefix> → matching key-value pairs + END
+COMPACT              → COMPACTION SUCCESSFUL | ERROR: COMPACTION FAILED
 STATS                → metrics summary
 ```
 
@@ -53,7 +54,7 @@ CLI REPL → MemTable → WAL → SSTables → Compaction → Bloom Filters → 
 | 3a | Practice: binary file encoder/decoder | ✅ Done |
 | 3b | Practice: WAL write + recover standalone | ✅ Done |
 | 4 | SSTables + MemTable flush | ✅ Done (includes tombstone/delete fix) |
-| 5 | LSM Compaction | ⬜ |
+| 5 | LSM Compaction | ✅ Done (core: full/manual compaction — auto-trigger + tiering deferred, see below) |
 | 6 | Bloom filters + sparse index | ⬜ |
 | 6a | Practice: standalone Bloom filter | ⬜ |
 | 7 | Benchmark tool | ⬜ |
@@ -62,19 +63,19 @@ CLI REPL → MemTable → WAL → SSTables → Compaction → Bloom Filters → 
 
 ---
 
-## Current State (Phase 5 — LSM Compaction, not started)
+## Current State (Phase 6 — Bloom filters + sparse index, not started)
 
-**Phases 1–4 complete**, including the tombstone/delete fix and a full exhaustive-test pass (see "Exhaustive test pass" below). All files building and tested. Full read/write cycle (WAL → MemTable → SSTable flush → SSTable read-back, tombstone-aware) works end-to-end and has been verified by actually building and running the project, not just reading the code. No known gaps remain except one still-unverified fix — see "Open item before Phase 5" below.
+**Phases 1–5 (core) complete**, including the tombstone/delete fix, full/manual LSM compaction, and exhaustive-test passes for both (see "Exhaustive test pass" sections below). All files building and tested. Full read/write/compact cycle (WAL → MemTable → SSTable flush → SSTable read-back → compaction → SSTable read-back, tombstone-aware throughout) works end-to-end and has been verified by actually building and running the project, not just reading the code. No known gaps remain in the core path. Deliberately deferred, not forgotten: automatic compaction triggering (currently `COMPACT` is manual-only) and a tiered/size-based compaction strategy — see "LSM Compaction" below for why these were scoped out of v1 and what would need to change to add them.
 
 ### Completed files
 - `calc.cpp` — calculator REPL practice task
 - `CMakeLists.txt` — C++17, sources: `main.cpp`, `src/db_engine.cpp`, `src/wal.cpp`, `src/ss_table.cpp`, `src/manifest.cpp`; links zlib (`-lz`)
-- `main.cpp` — full REPL, all commands wired, `db_engine Db;` (no-arg constructor — filenames now come from `constants.h`)
-- `include/constants.h` — every shared format constant lives here: `WAL_VERSION`/`WAL_MAGIC_NUMBER`, `SS_TABLE_VERSION`/`SS_TABLE_MAGIC_NUMBER`, `MANIFEST_VERSION`/`MANIFEST_MAGIC_CONST`, `enum class operation : uint8_t { set, del }` (replaces the old loose `SET`/`DELETE` constants, shared by WAL/`db_engine`/`ss_table`), file name constants (`WAL_FILE_NAME`, `SS_TABLE_NAME`, `MANIFEST_FILE_NAME`, `MANIFEST_TEMP_FILE_NAME` — all under `data/`), `MEM_TABLE_SIZE_LIMIT`, and the `open_mode` enum (`read`/`write`) used by `ss_table`
-- `include/db_engine.h` / `src/db_engine.cpp` — `db_engine` class; MemTable is `curr_mem_table` (renamed from `storage`), value type `std::optional<std::string>` (`nullopt` = tombstone); owns `wal*` and `manifest*` (no longer owns its own SSTable-index counter — always asks the manifest); `flush()` returns `bool`; public `exists()`/`get()`/`range()`/`prefix_scan()` all search SSTables (tombstone-aware), `exists_in_curr_mem_table()` is a private MemTable-only helper used internally by `set`/`del`/`recover_set`/`recover_del`
+- `main.cpp` — full REPL, all commands wired including `COMPACT`; `db_engine Db;` (no-arg constructor — filenames now come from `constants.h`); `EXIT`/`QUIT` comparison now trims surrounding whitespace via a small `trim()` helper (closes the item deferred at the end of Phase 4)
+- `include/constants.h` — every shared format constant lives here: `WAL_VERSION`/`WAL_MAGIC_NUMBER`, `SS_TABLE_VERSION`/`SS_TABLE_MAGIC_NUMBER`, `MANIFEST_VERSION`/`MANIFEST_MAGIC_CONST`, `enum class operation : uint8_t { set, del }` (replaces the old loose `SET`/`DELETE` constants, shared by WAL/`db_engine`/`ss_table`), file name constants (`WAL_FILE_NAME`, `SS_TABLE_FILE_NAME` — renamed from `SS_TABLE_NAME`, `MANIFEST_FILE_NAME`, `MANIFEST_TEMP_FILE_NAME` — all under `data/`), `MEM_TABLE_SIZE_LIMIT`, and the `open_mode` enum (`read`/`write`) used by `ss_table`
+- `include/db_engine.h` / `src/db_engine.cpp` — `db_engine` class; MemTable is `curr_mem_table` (renamed from `storage`), value type `std::optional<std::string>` (`nullopt` = tombstone); owns `wal*` and `manifest*` (no longer owns its own SSTable-index counter — always asks the manifest); both now constructed no-arg (`new wal()` / `new manifest()`, filenames read from `constants.h` internally rather than passed in — trades away constructor-injected test file paths, judged acceptable since this project's testing style has always been build-and-run against the real `data/` dir rather than isolated unit tests); `flush()` returns `bool`; public `exists()`/`get()`/`range()`/`prefix_scan()` all search SSTables (tombstone-aware), `exists_in_curr_mem_table()` is a private MemTable-only helper used internally by `set`/`del`/`recover_set`/`recover_del`; new `compact()` (see "LSM Compaction" below)
 - `include/wal.h` / `src/wal.cpp` — adds `truncate()` (close → reopen via `std::ofstream` with `trunc` → reopen `in|app`); `index` never resets, even across truncation (LSN-style, for future replication)
-- `include/ss_table.h` / `src/ss_table.cpp` — `write_to_ss_table()` (flush path, tombstone-aware); private `read_ss_table()` does the one shared "open file, verify magic number, verify `ss_table_index` matches the filename, loop reading entries with per-read error checks, verify final checksum" pass and returns an in-memory `ss_table_data`; `get_value_from_ss_table()` (single-key read, returns the 3-state `lookup_result`), `get_range_from_ss_table()`/`get_prefix_from_ss_table()`/`get_keys_from_ss_table()` (per-file multi-key read, returns tombstones included as `std::optional`-valued pairs) all now just call `read_ss_table()` once and operate on `data.records` — the old duplicated read-loop across all three read methods is gone. `open_mode::read`/`write` selects read vs. write for the constructor.
-- `include/manifest.h` / `src/manifest.cpp` — durable registry of valid SSTable indices (see below)
+- `include/ss_table.h` / `src/ss_table.cpp` — `write_to_ss_table()` (flush path, tombstone-aware); `read_ss_table()` does the one shared "open file, verify magic number, verify `ss_table_index` matches the filename, loop reading entries with per-read error checks, verify final checksum" pass and returns an in-memory `ss_table_data` — made **public** (was private) so `db_engine::compact()` can pull one file's raw `records` directly, since compaction needs the whole file's contents rather than a single-key/range/prefix view; `get_value_from_ss_table()` (single-key read, returns the 3-state `lookup_result`), `get_range_from_ss_table()`/`get_prefix_from_ss_table()`/`get_keys_from_ss_table()` (per-file multi-key read, returns tombstones included as `std::optional`-valued pairs) all still just call `read_ss_table()` once and operate on `data.records`. `open_mode::read`/`write` selects read vs. write for the constructor.
+- `include/manifest.h` / `src/manifest.cpp` — durable registry of valid SSTable indices; constructed no-arg (see `db_engine` note above); gained `replace_ss_table_indices()` (see "LSM Compaction" below)
 - `practice/encoder.cpp` — binary encoder/decoder practice (complete)
 - `practice/wal.cpp` — standalone WAL write + recover practice (complete)
 
@@ -159,6 +160,7 @@ Updates are never in-place edits: `add_new_ss_table_index()` rewrites the whole 
 **`GET` searches SSTables newest-to-oldest** (reverse iterator over the manifest's index list) once a key isn't in `curr_mem_table`, so an overwritten key resolves to its latest value rather than a stale one from an older file — and a tombstone found at any point stops the search immediately rather than falling through to older files.
 **Error policy (deliberate, not an oversight):** a missing or corrupted SSTable encountered during `get()` throws and is left uncaught — crashes the whole REPL. Consistent with `manifest`'s constructor-time exceptions also being uncaught. Worth revisiting once there's a server process (Phase 8) where one bad lookup shouldn't take down everything.
 **Old WAL/`wal` design decisions still hold:** `wal` owns its file, opens in constructor, closes in destructor; file created via temporary `ofstream` if missing; `db_engine` owns `wal*`/`manifest*` via pointer (forward declarations); `recover()` uses `db.recover_set()`/`recover_del()` (private, `friend class wal`); WAL write must succeed before MemTable update (durability).
+**Compaction ordering (crash safety, same principle as flush) — see "LSM Compaction" below for full detail:** write the merged SSTable → verify it → **update the manifest (durably, `replace_ss_table_indices()`)** → *then* delete the old physical files. `compact()` never touches the WAL or `curr_mem_table` at all — those protect *not-yet-durable* writes, and compaction only ever operates on data that's already durable on disk; the two are independent durability domains that never need to interact.
 
 ### Concepts understood
 - CRC32 checksums vs cryptographic hashes ✅
@@ -172,12 +174,16 @@ Updates are never in-place edits: `add_new_ss_table_index()` rewrites the whole 
 - `uint8_t` is `unsigned char`, which has a special "insert as character" `ostream` overload — streaming it to a text file writes a raw non-printable byte, not digit text; binary `.write()` calls are unaffected ✅ (found and fixed a real bug from this)
 - Unsigned integer underflow — `i >= 0` can never be false for an unsigned loop counter, and decrementing an unsigned `0` wraps to a huge value instead of going negative ✅ (found and fixed a real crash from this)
 - Why redundant/derivable state (a value that mirrors another piece of state instead of being computed from it) is a recurring source of bugs — hit repeatedly with duplicated `SET`/`DELETE` constants, `next_index` vs. the index list, and the manifest's `num_ss_tables` ✅
-- LSM-tree "newer shadows older" read semantics — the same key can legitimately exist in multiple immutable SSTable files, so read order matters, and this is also *why* compaction (next phase) exists ✅
+- LSM-tree "newer shadows older" read semantics — the same key can legitimately exist in multiple immutable SSTable files, so read order matters, and this is also *why* compaction exists ✅
 - RAII vs. manual `new`/`delete` for scoped objects (the `ss_table` inside `flush()` went from a leaked heap pointer to a local stack object) ✅
 - Reading a file fully before trusting a whole-file checksum means "stop scanning once found" isn't compatible with checksum-verified reads ✅
 - Tombstones — a delete needs to be durably *written down* (in memory as `nullopt`, on disk as an explicit marker), not just erased, or the fact that something was deleted can't survive being flushed/replayed; this is also why real deletes in an LSM-tree only get reclaimed later, during compaction ✅
 - `std::optional` (or any two-state type) stops being enough once a caller needs to distinguish *three* things (e.g. "not found here" vs. "found, and it's a tombstone" vs. "found, here's the value") — collapsing two of those into the same `nullopt` silently breaks whichever logic depended on telling them apart ✅ (found and fixed a real regression from this, twice — once in-memory, once across SSTable files)
 - `reinterpret_cast` legally allows converting an enum or integer *value* directly into a pointer — `reinterpret_cast<char*>(op)` (missing `&`) compiles cleanly with no warning, then segfaults at runtime because it treats `op`'s value as a memory address instead of taking `op`'s own address ✅ (found and fixed a real crash from this)
+- Erasing an element from a container while a range-based `for` loop (or any loop reusing the same iterator) is iterating over it is undefined behavior — the loop's implicit increment runs on an iterator invalidated by the erase. Compiles cleanly, can even appear to work by luck, but isn't reliable — the safe idiom for an associative container is an explicit iterator loop using `it = container.erase(it)`'s return value in place of a separate increment ✅ (found and fixed a real crash — an actual segfault — from this)
+- A monotonically-increasing counter (like the manifest's `next_ss_table_index`) lets you *prove* properties like "a freshly-issued value is always greater than every value issued before it" — useful for reasoning, but also a trap: a plausible-looking fix built on the wrong version of that fact (e.g. sorting by *value* to solve what is actually a *positional* ordering problem) can be a complete no-op without being obviously wrong ✅
+- Why compaction never needs to touch the WAL or MemTable: they protect exactly one kind of state (writes acknowledged but not yet durable as an SSTable), and compaction only ever operates on data that's already durable — two independent durability domains that never overlap, each with its own separate crash-safety mechanism (a replayable log for one, atomic durable-swap-then-delete for the other) ✅
+- Dropping a tombstone is only safe once nothing *older* remains that it could still be shadowing — precisely, only when the operation touching it spans every SSTable up to the oldest one that currently exists. Full compaction satisfies this trivially (it always touches everything); a partial/tiered compaction would need to actually check it ✅
 
 ### Naming convention
 - snake_case for all classes and variables (e.g. `db_engine`, `wal`, `ss_table`, `manifest`)
@@ -198,8 +204,44 @@ Before moving to Phase 5, ran a full adversarial test pass covering every comman
 
 All of the above were verified by actually rebuilding and running the project — piped stdin scenarios, simulated torn writes, full restart cycles — not by reading the code alone.
 
-### Open item before Phase 5
-**`EXIT`/`QUIT` still don't trim surrounding whitespace** before comparison (`main.cpp`, `startRepl`) — a padded exit command (e.g. trailing spaces) falls through to "unknown command" instead of exiting. Discussed: trimming a *copy* of `full_command` for just this one comparison is safe — it doesn't touch the tokenizer used for `SET`'s value parsing, and an empty-string value was already unrepresentable through the REPL before this discussion (the `stringstream >>` tokenizer already discards all whitespace). Not yet implemented as of this check — `main.cpp` lines 35–36 still compare the untrimmed `full_command` directly.
+### Open item before Phase 5 — resolved 2026-09-14
+**`EXIT`/`QUIT` not trimming surrounding whitespace** before comparison was fixed alongside the compaction work below: a small `trim()` helper in `main.cpp` is applied to just the exit/quit comparison, leaving the `SET`-value tokenizer untouched. Confirmed working.
+
+---
+
+## LSM Compaction — completed 2026-09-14, closes out Phase 5's core
+
+**The problem this solves:** every `flush()` creates a new immutable SSTable file, and nothing ever removed one — overwritten and tombstoned keys just sat on disk forever, and every read had to search a strictly growing list of files. Compaction reclaims that space and shrinks the search space by merging multiple SSTables into one.
+
+**Design landed (v1 — deliberately the simplest correct version, not the eventual production shape):**
+- **Full/major compaction only, manually triggered.** A new `COMPACT` REPL command always merges *every* SSTable currently in the manifest into a single new file — no size tiers, no automatic trigger policy. This was a deliberate staging choice: it isolates the genuinely hard parts (the merge, the tombstone-drop rule, the atomic manifest swap) from "when should this run," which is a separate, independently-addable concern. Automatic triggering (e.g. a threshold check at the end of `flush()`) and a real tiered/size-based strategy are both explicitly deferred, not forgotten — revisit once the core is trusted.
+- **`manifest::replace_ss_table_indices(const std::vector<uint64_t> &old_indices, uint64_t new_index)`** — the API deferred from Phase 4. Same shape as `add_new_ss_table_index()` (rewrite to a temp file, flush, verify, `std::filesystem::rename()` over the real manifest), but computes the new index list as `curr_indices − old_indices` (a hand-rolled sorted-vector set difference, `subtract_vectors()`) plus `new_index`, rather than only ever appending. `num_ss_tables` is derived from the resulting list's `size()` (not hand-incremented — deliberately avoiding the exact "redundant tracked count drifts from reality" bug class already hit once with this same field), and `next_ss_table_index = new_index + 1` is updated as part of the same atomic step, since it's a private member only a `manifest` method can touch.
+- **`db_engine::compact()`** — no-ops (returns `true` immediately) when fewer than 2 SSTables exist, since there's nothing to gain. Otherwise: reads every current SSTable's full contents via (now-public) `read_ss_table()`, merges newest-to-oldest into one `std::map<std::string, std::optional<std::string>>` with the same "insert only if not already present" pattern used by `range()`/`prefix_scan()`/`keys()`, then **unconditionally drops every tombstone** from the merged result before writing — safe specifically *because* this is always a full compaction spanning every existing SSTable, so by construction nothing older can possibly survive to be resurrected by removing the tombstone that was shadowing it. Writes the merged map via the existing `write_to_ss_table()`, calls `replace_ss_table_indices()` (checking its return value — a failure here must *not* be followed by deleting the old files), and only then deletes the old physical SSTable files. Ordering mirrors `flush()`'s established "durable state change before destroying old state" principle exactly.
+- **The tombstone-drop rule, precisely stated** (matters the moment partial/tiered compaction is ever added): dropping a tombstone is only safe when the compaction set includes every SSTable older than it — i.e. reaches all the way to the oldest SSTable that currently exists. Full compaction satisfies this trivially, every time, since it always includes everything. A future partial compaction (e.g. size-tiered, merging only some of the oldest files) would need to actually check this before dropping a tombstone, or carry it forward unchanged if the check fails.
+- **A known, currently-harmless simplification to revisit if tiering is ever added:** `replace_ss_table_indices()` places `new_index` at the *end* of the index list (`push_back`), which the manifest's consumers treat positionally as "newest." That's correct for v1 only because `old_indices` is always the *entire* list, so the result always has exactly one entry — position is moot. A compacted file that replaces only the *oldest* N files (tiered compaction) would need to be positioned where the oldest of those N used to sit, not at the newest end, or `get()`/`range()`/etc.'s newest-to-oldest reverse search would incorrectly treat old, just-compacted data as more recent than genuinely newer untouched files.
+
+### Bugs found and fixed during compaction's implementation
+
+Several real bugs surfaced during review and testing — worth keeping as a reference, same as the Phase 4 list below:
+1. `manifest.cpp`: `std::fstream temp_manifest_file.open(...)` — invalid C++ (can't declare a variable and chain `.open()` via `.` in one statement); wouldn't compile. Fixed to a proper constructor call, matching `add_new_ss_table_index()`'s existing pattern.
+2. `manifest.cpp`: the new temp-file write path initially had no `.flush()` and no write-success check before renaming — inconsistent with `add_new_ss_table_index()`'s existing defensive pattern. Added both.
+3. `subtract_vectors()` (the sorted-vector set-difference helper): the first version's merge loop only handled the "equal" and "`curr[i] < remove[j]`" cases, silently doing nothing (advancing neither pointer) when `curr[i] > remove[j]` — an **infinite loop** whenever `remove` contained any value not present in `curr`. It also unconditionally read `curr[0]` in a leading loop even when `curr` was empty (out-of-bounds). Fixed with the correct three-way branch (`==` / `<` / `else`), which also fixed the empty-`curr` case for free since the loop condition now checks bounds before indexing.
+4. A `std::lower_bound` + `insert` was added at one point to place `new_index` in sorted-by-value order, aimed at the positional-ordering concern above — but it's provably a no-op: since `new_index` always comes from the manifest's monotonically-increasing counter, it is *always* greater than every index already in the list, so `lower_bound` always returns `end()`. Reverted to a plain `push_back`. (The real fix for positional ordering, when it's eventually needed, is a different mechanism entirely — inserting at a *position*, not sorting by *value* — see the note above.)
+5. `db_engine::compact()`: `replace_ss_table_indices()`'s `bool` return was initially ignored — if that call failed, the code would still proceed to delete the old physical files, leaving the manifest pointing at files that no longer exist. Fixed to check-and-bail, matching `flush()`'s existing pattern of checking every step.
+6. `db_engine::compact()`: the merged `ss_table` was initially heap-allocated (`new ss_table(...)`) with `delete` only reached on the success path — an early `return false` on `write_to_ss_table()` failure skipped the `delete`, leaking the object and its still-open file handle. Same class of bug already found and fixed once in `flush()` (see "Concepts understood"). Fixed the same way: switched to a stack-allocated local object (RAII).
+7. **The tombstone-drop loop originally erased from `full_data` (a `std::map`) while iterating it with a range-based `for` loop** — undefined behavior, since erasing the element the loop's hidden iterator currently points at invalidates that iterator before the loop's implicit increment runs. This wasn't just theoretical: reproduced as an actual **segfault (exit code 139)** via a concrete repro (two flushes, the second containing a tombstone, then `COMPACT`); a control run with the same command sequence but no deletes succeeded cleanly, isolating the crash to this exact loop. Fixed with the correct idiom — an explicit iterator loop that only advances via `it = full_data.erase(it)`'s return value, advancing manually only when *not* erasing. Rebuilt and re-ran the exact crash repro to confirm: exit 0, and confirmed via exact byte-count on the resulting SSTable file that the tombstone was genuinely dropped, not merely surviving-but-hidden.
+
+### Exhaustive test pass — completed 2026-09-14, closes out Phase 5's core
+
+Before moving to Phase 6, ran a full pass covering compaction's interaction with the rest of the system (not just the happy path already covered while fixing the bugs above), all via real builds and real runs:
+1. `COMPACT` run twice in a row — second call correctly no-ops (the `< 2` guard) once only one SSTable remains; no new file created, manifest unchanged.
+2. `COMPACT` with exactly 2 SSTables, no tombstones — merges cleanly, `KEYS` correct.
+3. The same key `SET` across 3 separately-flushed files — after `COMPACT`, `GET` resolves to the newest write and `KEYS` lists the key exactly once (no duplicate/stale survivors).
+4. `RANGE`/`PREFIX_SCAN`/`EXISTS` immediately after a `COMPACT` — all correct; these have their own SSTable-merge code paths, distinct from `GET`'s, and hadn't been exercised by any of the fixes above.
+5. Live, unflushed `curr_mem_table` data present during a `COMPACT` — confirmed untouched, including surviving a full process restart afterward (WAL replay recovered it), proving `compact()` never touches the WAL or in-memory state, only already-flushed SSTables.
+6. `SET` → flush → `DELETE` → flush (tombstone) → `SET` a new value → flush → `COMPACT`, all for the same key — the final value wins correctly even with a tombstone sandwiched in the middle of the key's history; confirmed via exact byte-count that no leftover tombstone record survived in the compacted file.
+
+No further bugs found. `compact()` is considered correct and closes out Phase 5's core.
 
 ---
 
@@ -229,19 +271,19 @@ loop:
 mewDb/
 ├── CLAUDE.md              ← this file
 ├── CMakeLists.txt         ← complete and building cleanly
-├── main.cpp               ← full REPL, all commands wired, db_engine Db; (no-arg ctor)
+├── main.cpp               ← full REPL, all commands wired incl. COMPACT, db_engine Db; (no-arg ctor), trim() for EXIT/QUIT
 ├── calc.cpp               ← practice REPL (complete, not part of main build)
 ├── include/
 │   ├── constants.h        ← all shared format constants + open_mode enum
-│   ├── db_engine.h        ← db_engine class (owns wal*, manifest*)
-│   ├── wal.h              ← wal class (write, recover, truncate)
-│   ├── ss_table.h         ← ss_table class (write_to_ss_table, get_value_from_ss_table)
-│   └── manifest.h         ← manifest class (durable SSTable index registry)
+│   ├── db_engine.h        ← db_engine class (owns wal*, manifest*; compact())
+│   ├── wal.h              ← wal class (write, recover, truncate; no-arg ctor)
+│   ├── ss_table.h         ← ss_table class (write_to_ss_table, get_value_from_ss_table, public read_ss_table)
+│   └── manifest.h         ← manifest class (durable SSTable index registry; replace_ss_table_indices)
 ├── src/
-│   ├── db_engine.cpp      ← db_engine implementation (curr_mem_table, tombstone-aware, + WAL + SSTable + manifest)
+│   ├── db_engine.cpp      ← db_engine implementation (curr_mem_table, tombstone-aware, + WAL + SSTable + manifest + compact)
 │   ├── wal.cpp            ← WAL implementation (write, recover, truncate, checksum)
 │   ├── ss_table.cpp       ← SSTable implementation (write path + checksum-verified read path)
-│   └── manifest.cpp       ← manifest implementation (load-or-create, write-then-atomic-rename)
+│   └── manifest.cpp       ← manifest implementation (load-or-create, write-then-atomic-rename, replace_ss_table_indices)
 ├── practice/
 │   ├── encoder.cpp        ← binary encoder/decoder practice (complete)
 │   └── wal.cpp            ← standalone WAL write + recover practice (complete)

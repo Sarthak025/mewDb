@@ -220,6 +220,60 @@ std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::prefi
     return data;
 }
 
+
+bool db_engine::compact(){
+    // merge old table
+    std::map<std::string, std::optional<std::string>> full_data;
+    std::vector<uint64_t> curr_ss_table_indices = manifest_instance->get_ss_table_indices();
+
+    if(curr_ss_table_indices.size() < 2) return true;
+
+    for (auto it = curr_ss_table_indices.rbegin(); it != curr_ss_table_indices.rend(); it++){
+        auto i = *it;
+        ss_table curr_ss_table(i, open_mode::read);
+        ss_table_data curr_data = curr_ss_table.read_ss_table();
+
+        for (const auto &curr_record : curr_data.records){
+            if(full_data.find(curr_record.key) == full_data.end()){
+                full_data[curr_record.key] = curr_record.val;
+            }
+        }
+    }
+
+    // drop tombstones
+    for (auto it = full_data.begin(); it != full_data.end(); ) {
+        if (!it->second.has_value()) {
+            it = full_data.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    uint64_t new_index = manifest_instance->get_next_ss_table_index();
+    
+    // create 1 big new table copy data to big table
+    ss_table new_ss_table(new_index,open_mode::write);
+    if(!new_ss_table.write_to_ss_table(full_data)){
+        return false;
+    }
+
+    // create new temp manifest and rename
+    if(!manifest_instance->replace_ss_table_indices(curr_ss_table_indices,new_index)){
+        return false;
+    }
+
+    // delete old tables
+    for(auto idx : curr_ss_table_indices){
+        std::string curr_ss_table_name = SS_TABLE_FILE_NAME + "_" + std::to_string(idx) + ".bin";
+        if(!std::filesystem::remove(curr_ss_table_name)){
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
 bool db_engine::flush(){
     uint64_t ss_table_index = manifest_instance->get_next_ss_table_index();
     ss_table curr_ss_table(ss_table_index, open_mode::write);

@@ -29,5 +29,6 @@ private:
 	bool exists(const std::string &key);
 	std::vector<std::pair<std::string, std::optional<std::string>>> range(const std::string &start, const std::string &end);
 	std::vector<std::pair<std::string, std::optional<std::string>>> prefix_scan(const std::string &prefix);
+	bool compact();
 	bool flush();
 };
