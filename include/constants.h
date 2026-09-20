@@ -24,7 +24,7 @@ constexpr uint32_t SS_TABLE_MAGIC_NUMBER = 0xDEADBEEF;
 inline const std::string SS_TABLE_FILE_NAME = "data/ss_table";
 constexpr uint32_t RECORDS_PER_BLOCK = 10;
 
-constexpr uint32_t BLOOM_FILTER_TARGET_FP_RATE = 0.001;
+constexpr double BLOOM_FILTER_TARGET_FP_RATE = 0.001;
 constexpr uint32_t BLOOM_FILTER_SEED_1 = 6969;
 constexpr uint32_t BLOOM_FILTER_SEED_2 = 6767;
 

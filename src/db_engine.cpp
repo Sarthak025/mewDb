@@ -62,9 +62,9 @@ std::optional<std::string> db_engine::get(const std::string &key){
     std::vector<uint64_t> ss_table_indices = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_indices.rbegin(); it != ss_table_indices.rend(); ++it){
         ss_table curr_ss_table(*it, open_mode::read);
-        lookup_result result = curr_ss_table.get_value_from_ss_table(key);
+        Lookup_result result = curr_ss_table.get_value_from_ss_table(key);
 
-        if(result.status == lookup_status::not_found) continue;
+        if(result.status == Lookup_status::not_found) continue;
         else {
             return result.value;
         }

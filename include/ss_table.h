@@ -8,35 +8,73 @@
 #include "constants.h"
 
 // Format of SS_TABLE
+// [ Header ]                 <- fixed size, offset 0
+// [ Data Block 0 ]
+// [ Data Block 1 ]
+// ...
+// [ Data Block N-1 ]
+// [ Bloom Filter Block ]      <- starts at footer.bloom_filter_offset
+// [ Sparse Index Block ]      <- starts at footer.sparse_index_offset
+// [ Footer ]                  <- fixed size, last thing in the file
+//________________________________________________________________________________________________________________________________
+
+// HEADER BLOCK (FIXED BYTE SIZE)
+// uint32_t magic_number;
+// uint8_t version_number;
+// uint64_t ss_table_index;
+// uint64_t entry_count;
+// uint32_t header_checksum;
+//________________________________________________________________________________________________________________________________
+
+// DATA BLOCK
+// uint32_t entry_cnt;
 // 
-// uint32_t		magic_number;
-// uint8_t		version_number;
-// uint64_t 	ss_table_index
-// uint64_t 	entry_count;
+// (multiple records)
+// uint8_t operation; (from the shared enum: set / del)
+// uint32_t key_len;
+// char[] key;
+// uint32_t val_len; (0 for a del entry)
+// char[] val; (empty for a del entry)
 // 
-// repeat this for multiple key:val
+// uint32_t data_block_checksum;
+//________________________________________________________________________________________________________________________________
+
+// BLOOM FILTER BLOCK
+// uint64_t bit_array_size;
+// uint32_t hash_func_cnt;
+// uint8_t[] bit_array;
+// uint32 bloom_filter_checksum;
+//________________________________________________________________________________________________________________________________
+
+// SPARSE INDEX BLOCK
+// uint64_t num_data_blocks;
 // 
-// operation   uint8_t   (from the shared enum: set / del)
-// key_len     uint32_t
-// key         char[]    variable
-// val_len     uint32_t  (0 for a del entry)
-// val         char[]    variable (empty for a del entry)
-// 
-// uint32_t checksum
+// (muliple sparse indexes)
+// uint32_t key_len;
+// char[] key; (variable)
+// uint64_t offset;
+// uint32_t sparse_index_checksum;
+//________________________________________________________________________________________________________________________________
+
+// FOOTER BLOCK (FIXED BYTE SIZE)
+// uint64_t bloom_filter_offset;
+// uint64_t sparse_index_offset;
+// uint32_t footer_checksum;
 
 
-enum class lookup_status { 
+
+enum class Lookup_status { 
 	not_found, 
 	tombstone,
 	found
 };
 
-struct lookup_result {
-    lookup_status status;
+struct Lookup_result {
+    Lookup_status status;
     std::optional<std::string> value;  // meaningful only when status == found
 };
 
-struct record {
+struct Entry {
     operation op;
     uint32_t key_len;
     std::string key;
@@ -49,13 +87,12 @@ struct ss_table_data {
     uint8_t version_num;
     uint64_t ss_table_idx;
     uint64_t entry_cnt;
-    std::vector<record> records;
+    std::vector<Entry> records;
 };
 
 
 class ss_table {
 private:
-	std::string ss_table_file_name;
 	uint64_t ss_table_index;
 	std::fstream ss_table_file;
     
@@ -64,7 +101,7 @@ private:
 	~ss_table();
     
     bool write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table);
-	lookup_result get_value_from_ss_table(const std::string &key);
+	Lookup_result get_value_from_ss_table(const std::string &key);
 	std::vector<std::pair<std::string, std::optional<std::string>>> get_range_from_ss_table(const std::string &start, const std::string &end);
 	std::vector<std::pair<std::string, std::optional<std::string>>> get_prefix_from_ss_table(const std::string &prefix);
     std::vector<std::pair<std::string, std::optional<std::string>>> get_keys_from_ss_table(const std::optional<std::string> &key = std::nullopt);
