@@ -10,7 +10,7 @@
 
 using Record = std::pair<std::string, std::optional<std::string>>;
 
-uint32_t key_val_checksum(operation op, uint32_t crc, const std::string &key, const std::string &val) {
+uint32_t key_val_checksum(Operation op, uint32_t crc, const std::string &key, const std::string &val) {
     uint32_t key_len = key.length();
 	uint32_t val_len = val.length();
 
@@ -53,7 +53,7 @@ void write_data_block(std::fstream &ss_table_file, std::vector<Record> &data){
     ss_table_file.write(reinterpret_cast<char *>(&entry_cnt),sizeof(entry_cnt));
 
     for(const auto &[key, val] : data){
-        operation op = (val.has_value()) ? operation::set : operation::del;
+        Operation op = (val.has_value()) ? Operation::set : Operation::del;
 
         uint32_t key_len = key.length();
 	    uint32_t val_len = (val.has_value()) ? val.value().length() : 0;
@@ -76,9 +76,9 @@ void write_data_block(std::fstream &ss_table_file, std::vector<Record> &data){
 
 
 // TODO: need to change this structure
-ss_table_data ss_table::read_ss_table() {
+SsTableData SsTable::read_ss_table() {
 
-    ss_table_data curr_data;
+    SsTableData curr_data;
 
     // Move to begining to the file
     ss_table_file.seekg(0, std::ios::beg);
@@ -138,10 +138,10 @@ ss_table_data ss_table::read_ss_table() {
 
         crc = key_val_checksum(curr_record.op, crc, curr_record.key, val);
 
-        if(curr_record.op == operation::del){
+        if(curr_record.op == Operation::del){
             curr_record.val = std::nullopt;
         }
-        else if (curr_record.op == operation::set){
+        else if (curr_record.op == Operation::set){
             curr_record.val = val;
         }
 
@@ -159,11 +159,11 @@ ss_table_data ss_table::read_ss_table() {
 }
 
 
-ss_table::ss_table(uint64_t table_index, open_mode mode){
+SsTable::SsTable(uint64_t table_index, OpenMode mode){
     std::string ss_table_file_name = SS_TABLE_FILE_NAME + "_" + std::to_string(table_index) + ".bin";
     ss_table_index = table_index;
 
-    if(mode == open_mode::read){
+    if(mode == OpenMode::read){
         if(std::filesystem::is_regular_file(ss_table_file_name)){
             ss_table_file.open(ss_table_file_name, std::ios::binary | std::ios::in);
         }
@@ -171,19 +171,19 @@ ss_table::ss_table(uint64_t table_index, open_mode mode){
             throw std::runtime_error("ss_table doesnt exists...");
         }
     }
-    else if (mode == open_mode::write){
+    else if (mode == OpenMode::write){
         { std::ofstream create(ss_table_file_name, std::ios::binary | std::ios::app); }
         ss_table_file.open(ss_table_file_name, std::ios::binary | std::ios::out | std::ios::app);
     }
 }
 
 
-ss_table::~ss_table(){
+SsTable::~SsTable(){
     ss_table_file.close();
 }
 
 
-bool ss_table::write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table){
+bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table){
 
     // TODO: need to add return offsets to all blocks
 
@@ -212,22 +212,22 @@ bool ss_table::write_to_ss_table(const std::map<std::string, std::optional<std::
 }
 
 // TODO: funtion needs reworking
-Lookup_result ss_table::get_value_from_ss_table(const std::string &search_key){
+LookupResult SsTable::get_value_from_ss_table(const std::string &search_key){
 
-    Lookup_result result = {
-        Lookup_status::not_found,
+    LookupResult result = {
+        LookupStatus::not_found,
         std::nullopt
     };
 
-    ss_table_data data = this->read_ss_table();
+    SsTableData data = this->read_ss_table();
     for(const auto &rec : data.records){
         if (rec.key == search_key) {
-            if(rec.op == operation::del){
-                result.status = Lookup_status::tombstone;
+            if(rec.op == Operation::del){
+                result.status = LookupStatus::tombstone;
                 result.value = std::nullopt;
             }
-            else if (rec.op == operation::set){
-                result.status = Lookup_status::found;
+            else if (rec.op == Operation::set){
+                result.status = LookupStatus::found;
                 result.value = rec.val;
             }
         }
@@ -237,15 +237,15 @@ Lookup_result ss_table::get_value_from_ss_table(const std::string &search_key){
 }
 
 
-std::vector<Record> ss_table::get_keys_from_ss_table(const std::optional<std::string> &key){
-    ss_table_data data = this->read_ss_table();
+std::vector<Record> SsTable::get_keys_from_ss_table(const std::optional<std::string> &key){
+    SsTableData data = this->read_ss_table();
     std::map<std::string, std::optional<std::string>> temp_mpp;
 
     for(const auto &rec : data.records){
-        if (rec.op == operation::set) {
+        if (rec.op == Operation::set) {
             temp_mpp[rec.key] = rec.val;
         }
-        else if (rec.op == operation::del) {
+        else if (rec.op == Operation::del) {
             temp_mpp[rec.key] = std::nullopt;
         }
     }
@@ -261,16 +261,16 @@ std::vector<Record> ss_table::get_keys_from_ss_table(const std::optional<std::st
 }
 
 
-std::vector<Record> ss_table::get_range_from_ss_table(const std::string &start, const std::string &end){
+std::vector<Record> SsTable::get_range_from_ss_table(const std::string &start, const std::string &end){
 
-    ss_table_data data = this->read_ss_table();
+    SsTableData data = this->read_ss_table();
     std::map<std::string, std::optional<std::string>> temp_mpp;
 
     for(const auto &rec : data.records){
-        if (rec.op == operation::set) {
+        if (rec.op == Operation::set) {
             temp_mpp[rec.key] = rec.val;
         }
-        else if (rec.op == operation::del) {
+        else if (rec.op == Operation::del) {
             temp_mpp[rec.key] = std::nullopt;
         }
     }
@@ -288,16 +288,16 @@ std::vector<Record> ss_table::get_range_from_ss_table(const std::string &start, 
 }
 
 
-std::vector<Record> ss_table::get_prefix_from_ss_table(const std::string &prefix){
+std::vector<Record> SsTable::get_prefix_from_ss_table(const std::string &prefix){
 
-    ss_table_data data = this->read_ss_table();
+    SsTableData data = this->read_ss_table();
     std::map<std::string, std::optional<std::string>> temp_mpp;
 
     for(const auto &rec : data.records){
-        if (rec.op == operation::set) {
+        if (rec.op == Operation::set) {
             temp_mpp[rec.key] = rec.val;
         }
-        else if (rec.op == operation::del) {
+        else if (rec.op == Operation::del) {
             temp_mpp[rec.key] = std::nullopt;
         }
     }

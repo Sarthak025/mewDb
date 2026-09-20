@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <string>
 
-enum class open_mode {
+enum class OpenMode {
 	read,
     write
 };
 
-enum class operation : uint8_t{
+enum class Operation : uint8_t{
     set,
     del
 };

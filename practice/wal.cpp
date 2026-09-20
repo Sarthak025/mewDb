@@ -20,7 +20,7 @@ constexpr uint8_t SET = 0;
 constexpr uint8_t DELETE = 1;
 constexpr uint32_t MAGIC_NUMBER = 0xDEADBEEF;
 
-struct wal_data {
+struct WalData {
 	uint32_t magic_number;
 	uint8_t version_number;
 	uint64_t index;
@@ -31,7 +31,7 @@ struct wal_data {
 	std::string val;
 };
 
-uint32_t calc_checksum(const wal_data &record) {
+uint32_t calc_checksum(const WalData &record) {
 	uint32_t crc = crc32(0L, Z_NULL, 0);
 
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&record.version_number), sizeof(record.version_number));
@@ -52,7 +52,7 @@ bool write_record_v1(std::fstream &file, uint64_t index, uint8_t operation, cons
 	uint32_t key_len = key.length();
 	uint32_t val_len = val.length();
 
-    wal_data record = {
+    WalData record = {
         magic_number,
         version_number,
         index,
@@ -82,7 +82,7 @@ void recover(std::fstream &file) {
 	
 	file.seekg(0, std::ios::beg);
 
-	wal_data record;
+	WalData record;
 	uint32_t checksum;
 
 	while(true){

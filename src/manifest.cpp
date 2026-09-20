@@ -36,7 +36,7 @@ std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const 
     return result;
 }
 
-manifest::manifest(){
+Manifest::Manifest(){
     manifest_file_name = MANIFEST_FILE_NAME;
 
     if (std::filesystem::is_regular_file(manifest_file_name)) {
@@ -82,10 +82,10 @@ manifest::manifest(){
 }
 
 
-manifest::~manifest(){}
+Manifest::~Manifest(){}
 
 
-std::vector<uint64_t> manifest::get_ss_table_indices(){
+std::vector<uint64_t> Manifest::get_ss_table_indices(){
     manifest_file.clear();
     manifest_file.seekg(0, std::ios::beg);
 
@@ -115,12 +115,12 @@ std::vector<uint64_t> manifest::get_ss_table_indices(){
 }
 
 
-uint64_t manifest::get_next_ss_table_index(){
+uint64_t Manifest::get_next_ss_table_index(){
     return next_ss_table_index;
 }
 
 
-bool manifest::add_new_ss_table_index(uint64_t idx){
+bool Manifest::add_new_ss_table_index(uint64_t idx){
 
     std::vector<uint64_t> available_indices = this->get_ss_table_indices();
 
@@ -154,7 +154,7 @@ bool manifest::add_new_ss_table_index(uint64_t idx){
 }
 
 
-bool manifest::replace_ss_table_indices(const std::vector<uint64_t> &old_indices, uint64_t new_index){
+bool Manifest::replace_ss_table_indices(const std::vector<uint64_t> &old_indices, uint64_t new_index){
     std::vector<uint64_t> curr_indices = this->get_ss_table_indices();
     std::vector<uint64_t> final_indices = subtract_vectors(curr_indices, old_indices);
 

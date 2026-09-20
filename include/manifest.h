@@ -15,7 +15,7 @@
 // SS_TABLE_INDEX_2
 // ......
 
-class manifest {
+class Manifest {
 private:
     std::string manifest_file_name;
     std::fstream manifest_file;
@@ -24,8 +24,8 @@ private:
     uint64_t num_ss_tables;
 
 public:
-    manifest();
-    ~manifest();
+    Manifest();
+    ~Manifest();
     std::vector<uint64_t> get_ss_table_indices();
     uint64_t get_next_ss_table_index();
     bool add_new_ss_table_index(uint64_t index);

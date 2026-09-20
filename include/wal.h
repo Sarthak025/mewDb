@@ -5,19 +5,19 @@
 #include <string>
 #include "constants.h"
 
-class db_engine;
+class DbEngine;
 
-class wal {
+class Wal {
 private:
 	std::string wal_filename;
 	std::fstream wal_log_file;
 	uint64_t index = 0;
 
 public:
-	wal();
-	~wal();
+	Wal();
+	~Wal();
 
-	bool write(operation operation, const std::string &key, const std::string &val);
-	void recover(db_engine& db);
+	bool write(Operation operation, const std::string &key, const std::string &val);
+	void recover(DbEngine& db);
 	bool truncate();
 };

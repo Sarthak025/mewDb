@@ -186,7 +186,11 @@ Updates are never in-place edits: `add_new_ss_table_index()` rewrites the whole 
 - Dropping a tombstone is only safe once nothing *older* remains that it could still be shadowing — precisely, only when the operation touching it spans every SSTable up to the oldest one that currently exists. Full compaction satisfies this trivially (it always touches everything); a partial/tiered compaction would need to actually check it ✅
 
 ### Naming convention
-- snake_case for all classes and variables (e.g. `db_engine`, `wal`, `ss_table`, `manifest`)
+- **PascalCase for all types** — classes, structs, and enums (e.g. `DbEngine`, `Wal`, `SsTable`, `Manifest`, `SsTableData`, `WalData`, `Entry`, `LookupResult`, `LookupStatus`, `Operation`, `OpenMode`)
+- **snake_case for everything else** — variables, member variables, methods, and free functions (e.g. `wal_instance`, `curr_mem_table`, `ss_table_index`, `write_to_ss_table()`, `get_ss_table_indices()`)
+- SCREAMING_SNAKE_CASE for constants in `constants.h` (e.g. `WAL_MAGIC_NUMBER`, `MEM_TABLE_SIZE_LIMIT`)
+- File names stay snake_case and are independent of the type they hold (`SsTable` lives in `ss_table.h` / `ss_table.cpp`)
+- Switched from all-snake_case on 2026-09-20; older prose elsewhere in this file may still spell types the old way (`db_engine`, `ss_table`, …) — the code is the source of truth
 - Project headers use `#include "file.h"`, system headers use `#include <file>`
 - Shared format constants (magic numbers, versions, file names) live centrally in `constants.h`, never duplicated per-file
 

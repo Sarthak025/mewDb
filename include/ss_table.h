@@ -63,26 +63,26 @@
 
 
 
-enum class Lookup_status { 
+enum class LookupStatus { 
 	not_found, 
 	tombstone,
 	found
 };
 
-struct Lookup_result {
-    Lookup_status status;
+struct LookupResult {
+    LookupStatus status;
     std::optional<std::string> value;  // meaningful only when status == found
 };
 
 struct Entry {
-    operation op;
+    Operation op;
     uint32_t key_len;
     std::string key;
     uint32_t val_len;
     std::optional<std::string> val;
 };
 
-struct ss_table_data {
+struct SsTableData {
     uint32_t magic_num;
     uint8_t version_num;
     uint64_t ss_table_idx;
@@ -91,20 +91,20 @@ struct ss_table_data {
 };
 
 
-class ss_table {
+class SsTable {
 private:
 	uint64_t ss_table_index;
 	std::fstream ss_table_file;
     
     public:
-	ss_table(uint64_t table_index, open_mode mode);
-	~ss_table();
+	SsTable(uint64_t table_index, OpenMode mode);
+	~SsTable();
     
     bool write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table);
-	Lookup_result get_value_from_ss_table(const std::string &key);
+	LookupResult get_value_from_ss_table(const std::string &key);
 	std::vector<std::pair<std::string, std::optional<std::string>>> get_range_from_ss_table(const std::string &start, const std::string &end);
 	std::vector<std::pair<std::string, std::optional<std::string>>> get_prefix_from_ss_table(const std::string &prefix);
     std::vector<std::pair<std::string, std::optional<std::string>>> get_keys_from_ss_table(const std::optional<std::string> &key = std::nullopt);
-	ss_table_data read_ss_table();
+	SsTableData read_ss_table();
 
 };

@@ -7,18 +7,18 @@
 #include <string>
 #include <zlib.h>
 
-struct wal_data {
+struct WalData {
 	uint32_t magic_number;
 	uint8_t version_number;
 	uint64_t index;
-	operation operation;
+	Operation operation;
 	uint32_t key_len;
 	std::string key;
 	uint32_t val_len;
 	std::string val;
 };
 
-uint32_t calc_checksum(const wal_data &record) {
+uint32_t calc_checksum(const WalData &record) {
 	uint32_t crc = crc32(0L, Z_NULL, 0);
 
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&record.version_number), sizeof(record.version_number));
@@ -32,19 +32,19 @@ uint32_t calc_checksum(const wal_data &record) {
 	return crc;
 }
 
-wal::wal(){
+Wal::Wal(){
 	wal_filename = WAL_FILE_NAME;
 	{ std::ofstream create(wal_filename, std::ios::binary | std::ios::app); }
     wal_log_file.open(wal_filename, std::ios::binary | std::ios::in | std::ios::app);
     index = 0;
 }
 
-wal::~wal(){
+Wal::~Wal(){
     wal_log_file.close();
 }
 
-bool wal::write(operation operation, const std::string &key, const std::string &val){
-    if(operation != operation::set && operation!= operation::del) {
+bool Wal::write(Operation operation, const std::string &key, const std::string &val){
+    if(operation != Operation::set && operation!= Operation::del) {
         return false;
     }
     
@@ -53,7 +53,7 @@ bool wal::write(operation operation, const std::string &key, const std::string &
 	uint32_t key_len = key.length();
 	uint32_t val_len = val.length();
 
-    wal_data record = {
+    WalData record = {
         magic_number,
         version_number,
         index,
@@ -86,11 +86,11 @@ bool wal::write(operation operation, const std::string &key, const std::string &
 	}
 }
 
-void wal::recover(db_engine& db){
+void Wal::recover(DbEngine& db){
 
     wal_log_file.seekg(0, std::ios::beg);
 
-	wal_data record;
+	WalData record;
 	uint32_t checksum;
 
 	while(true){
@@ -122,10 +122,10 @@ void wal::recover(db_engine& db){
 		}
 
 
-		if(record.operation == operation::set){
+		if(record.operation == Operation::set){
 			db.recover_set(record.key, record.val);
 		}
-		else if(record.operation == operation::del) {
+		else if(record.operation == Operation::del) {
 			db.recover_del(record.key);
 		}
         index = record.index;
@@ -134,7 +134,7 @@ void wal::recover(db_engine& db){
 	wal_log_file.clear();
 }
 
-bool wal::truncate() {
+bool Wal::truncate() {
 	wal_log_file.close();
 	{
         std::ofstream truncate_file(wal_filename, std::ios::binary | std::ios::trunc);

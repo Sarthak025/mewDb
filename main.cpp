@@ -32,7 +32,7 @@ std::string trim(std::string s) {
     return s;
 }
 
-void startRepl(db_engine &Db) {
+void startRepl(DbEngine &Db) {
 	while (true) {
 		std::cout << "mew> ";
 
@@ -149,6 +149,6 @@ void startRepl(db_engine &Db) {
 
 int main() {
 	std::cout << "..........Starting mewDb.........." << std::endl;
-	db_engine Db;
+	DbEngine Db;
 	startRepl(Db);
 }

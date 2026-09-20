@@ -6,18 +6,18 @@
 #include <iostream>
 
 
-db_engine::db_engine(){
-    wal_instance = new wal();
+DbEngine::DbEngine(){
+    wal_instance = new Wal();
     wal_instance->recover(*this);
-    manifest_instance = new manifest();
+    manifest_instance = new Manifest();
 }
 
-db_engine::~db_engine(){
+DbEngine::~DbEngine(){
     delete wal_instance;
     delete manifest_instance;
 }
 
-void db_engine::recover_set(const std::string &key, const std::string &val){
+void DbEngine::recover_set(const std::string &key, const std::string &val){
     if(this->exists_in_curr_mem_table(key)){
         mem_table_size -= key.length() + (curr_mem_table[key].value()).length();
     }
@@ -26,15 +26,15 @@ void db_engine::recover_set(const std::string &key, const std::string &val){
     curr_mem_table[key] = val;
 }
 
-void db_engine::recover_del(const std::string &key){
+void DbEngine::recover_del(const std::string &key){
     if(this->exists_in_curr_mem_table(key)){
         mem_table_size -= key.length() + (curr_mem_table[key].value()).length();
     }
     curr_mem_table[key] = std::nullopt;
 }
 
-void db_engine::set(const std::string &key, const std::string &val){
-    if(wal_instance->write(operation::set, key, val)){
+void DbEngine::set(const std::string &key, const std::string &val){
+    if(wal_instance->write(Operation::set, key, val)){
 
         if(this->exists_in_curr_mem_table(key)){
             mem_table_size -= key.length() + (curr_mem_table[key].value()).length();
@@ -51,7 +51,7 @@ void db_engine::set(const std::string &key, const std::string &val){
     }
 }
 
-std::optional<std::string> db_engine::get(const std::string &key){
+std::optional<std::string> DbEngine::get(const std::string &key){
 
     // Check in curr_mem_table
     if(curr_mem_table.find(key) != curr_mem_table.end()){
@@ -61,10 +61,10 @@ std::optional<std::string> db_engine::get(const std::string &key){
     // Check in SS_Tables
     std::vector<uint64_t> ss_table_indices = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_indices.rbegin(); it != ss_table_indices.rend(); ++it){
-        ss_table curr_ss_table(*it, open_mode::read);
-        Lookup_result result = curr_ss_table.get_value_from_ss_table(key);
+        SsTable curr_ss_table(*it, OpenMode::read);
+        LookupResult result = curr_ss_table.get_value_from_ss_table(key);
 
-        if(result.status == Lookup_status::not_found) continue;
+        if(result.status == LookupStatus::not_found) continue;
         else {
             return result.value;
         }
@@ -73,13 +73,13 @@ std::optional<std::string> db_engine::get(const std::string &key){
     return std::nullopt;
 }
 
-bool db_engine::del(const std::string &key){
+bool DbEngine::del(const std::string &key){
     std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
 
     std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
-        ss_table curr_ss_table(i, open_mode::read);
+        SsTable curr_ss_table(i, OpenMode::read);
         std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_keys_from_ss_table(key);
         
         // merge to temp map
@@ -101,7 +101,7 @@ bool db_engine::del(const std::string &key){
         return false;
     }
 
-    if (!wal_instance->write(operation::del, key, "")) {
+    if (!wal_instance->write(Operation::del, key, "")) {
         throw std::runtime_error("Error in deleting key...");
     }
 
@@ -116,7 +116,7 @@ bool db_engine::del(const std::string &key){
     return true;
 }
 
-bool db_engine::exists_in_curr_mem_table(const std::string &key){
+bool DbEngine::exists_in_curr_mem_table(const std::string &key){
     auto it = curr_mem_table.find(key);
 
     if (it != curr_mem_table.end()) {
@@ -125,7 +125,7 @@ bool db_engine::exists_in_curr_mem_table(const std::string &key){
     return false;
 }
 
-std::vector<std::string> db_engine::keys(){
+std::vector<std::string> DbEngine::keys(){
 
     // make copy of current mem_table
     std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
@@ -134,7 +134,7 @@ std::vector<std::string> db_engine::keys(){
     std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
-        ss_table curr_ss_table(i, open_mode::read);
+        SsTable curr_ss_table(i, OpenMode::read);
         std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_keys_from_ss_table();
         
         // merge to temp map
@@ -153,14 +153,14 @@ std::vector<std::string> db_engine::keys(){
     return full_data;
 }
 
-bool db_engine::exists(const std::string &key){
+bool DbEngine::exists(const std::string &key){
     return (this->get(key)).has_value();
 }
 
-std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::range(const std::string &start, const std::string &end){
+std::vector<std::pair<std::string, std::optional<std::string>>> DbEngine::range(const std::string &start, const std::string &end){
 
     if(start > end){
-        return db_engine::range(end, start);
+        return DbEngine::range(end, start);
     }
 
     // make copy of current mem_table
@@ -169,7 +169,7 @@ std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::range
     std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
-        ss_table curr_ss_table(i, open_mode::read);
+        SsTable curr_ss_table(i, OpenMode::read);
         std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_range_from_ss_table(start, end);
         
         // merge to temp map
@@ -191,14 +191,14 @@ std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::range
     return data;
 }
 
-std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::prefix_scan(const std::string &prefix){
+std::vector<std::pair<std::string, std::optional<std::string>>> DbEngine::prefix_scan(const std::string &prefix){
     // make copy of current mem_table
     std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
     
     std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
-        ss_table curr_ss_table(i, open_mode::read);
+        SsTable curr_ss_table(i, OpenMode::read);
         std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_prefix_from_ss_table(prefix);
         
         // merge to temp map
@@ -221,7 +221,7 @@ std::vector<std::pair<std::string, std::optional<std::string>>> db_engine::prefi
 }
 
 
-bool db_engine::compact(){
+bool DbEngine::compact(){
     // merge old table
     std::map<std::string, std::optional<std::string>> full_data;
     std::vector<uint64_t> curr_ss_table_indices = manifest_instance->get_ss_table_indices();
@@ -230,8 +230,8 @@ bool db_engine::compact(){
 
     for (auto it = curr_ss_table_indices.rbegin(); it != curr_ss_table_indices.rend(); it++){
         auto i = *it;
-        ss_table curr_ss_table(i, open_mode::read);
-        ss_table_data curr_data = curr_ss_table.read_ss_table();
+        SsTable curr_ss_table(i, OpenMode::read);
+        SsTableData curr_data = curr_ss_table.read_ss_table();
 
         for (const auto &curr_record : curr_data.records){
             if(full_data.find(curr_record.key) == full_data.end()){
@@ -252,7 +252,7 @@ bool db_engine::compact(){
     uint64_t new_index = manifest_instance->get_next_ss_table_index();
     
     // create 1 big new table copy data to big table
-    ss_table new_ss_table(new_index,open_mode::write);
+    SsTable new_ss_table(new_index,OpenMode::write);
     if(!new_ss_table.write_to_ss_table(full_data)){
         return false;
     }
@@ -274,9 +274,9 @@ bool db_engine::compact(){
 }
 
 
-bool db_engine::flush(){
+bool DbEngine::flush(){
     uint64_t ss_table_index = manifest_instance->get_next_ss_table_index();
-    ss_table curr_ss_table(ss_table_index, open_mode::write);
+    SsTable curr_ss_table(ss_table_index, OpenMode::write);
 
     if (!curr_ss_table.write_to_ss_table(curr_mem_table)) {
         return false;
