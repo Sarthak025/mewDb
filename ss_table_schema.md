@@ -88,14 +88,25 @@ whole file, just scoped to one block.
 
 | Field | Type | Size | Notes |
 |---|---|---|---|
-| `m` | `uint64_t` | 8 | bit-array size for *this file*, computed at write time from this file's real entry count and `BLOOM_FILTER_TARGET_FP_RATE` — never hardcoded |
-| `k` | `uint32_t` | 4 | hash-function count, computed alongside `m` |
-| `bit_array` | `uint8_t[]` | `ceil(m/8)` | length is derived from `m`, not stored separately |
-| `checksum` | `uint32_t` | 4 | CRC32 over `m` + `k` + `bit_array` |
+| `bit_array_size` | `uint64_t` | 8 | **bytes**, not bits — computed at write time as `ceil(m/8)` where `m` comes from this file's real entry count and `BLOOM_FILTER_TARGET_FP_RATE` (never hardcoded); a reader uses this value directly as "how many bytes to read," no ceiling math needed on read |
+| `k` | `uint32_t` | 4 | hash-function count, computed from the *bit* count (`bit_array_size * 8`), not the byte count — easy to get backwards, see the implementation note below |
+| `bit_array` | `uint8_t[]` | `bit_array_size` | length is read directly, not derived |
+| `checksum` | `uint32_t` | 4 | CRC32 over `bit_array_size` + `k` + `bit_array` |
 
-`m` and `k` **must** be stored (not derived at read time) — deriving them would require
-reconstructing this file's true entry count, which means reading every data block, which
-defeats the entire point of having a cheap skip-check in the first place.
+`bit_array_size` and `k` **must** be stored (not derived at read time) — deriving them would
+require reconstructing this file's true entry count, which means reading every data block,
+which defeats the entire point of having a cheap skip-check in the first place.
+
+Storing the **byte** count rather than the raw bit count `m` was a deliberate choice made
+during implementation, not the original plan (which stored bits and expected a reader to
+`ceil()` its way to a byte length): reading `bit_array_size` bytes directly means a reader
+never redoes a ceiling-division that has to exactly match what the writer did — one less
+place for writer/reader logic to quietly drift apart. The tradeoff: **every place that needs
+bits — the `k` formula at write time, and the `hash % ...` indexing at both write and read
+time — must remember to multiply by 8 first.** Getting this backwards (using the byte count
+where a bit count is needed) was a real bug hit during implementation, twice, in two
+different spots — worth double-checking both spots stay consistent as the sparse index and
+`db_engine` integration get built next.
 
 The `h1 + i·h2 mod m` derivation and its known, measured ~0.136%-vs-0.1% false-positive gap
 (from the practice run) carries forward unchanged — already a deliberate, accepted tradeoff.

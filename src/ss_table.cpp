@@ -7,8 +7,31 @@
 #include <cstdint>
 #include <zlib.h>
 #include <utility>
+#include <cmath>
+#define XXH_INLINE_ALL
+#include <xxhash.h>
 
+const double ln2 = std::log(2.0);
 using Record = std::pair<std::string, std::optional<std::string>>;
+
+uint64_t xxhash(const std::string &key, uint64_t seed) {
+	return XXH3_64bits_withSeed(key.data(), key.size(), seed);
+}
+
+void insert_to_bloom_filter(const std::string &key, std::vector<uint8_t> &bloomFilter, uint64_t bit_array_size, uint32_t hash_func_cnt) {
+	uint64_t h1 = xxhash(key, BLOOM_FILTER_SEED_1);
+	uint64_t h2 = xxhash(key, BLOOM_FILTER_SEED_2);
+
+	for (uint64_t i = 0; i < hash_func_cnt; i++) {
+		uint64_t hash = h1 + i * h2;
+
+		uint64_t bit_idx = hash % (bit_array_size*BYTE_SIZE);
+		uint64_t byte_idx = bit_idx / BYTE_SIZE;
+		uint64_t bit_offset = bit_idx % BYTE_SIZE;
+
+		bloomFilter[byte_idx] |= (1u << bit_offset);
+	}
+}
 
 uint32_t key_val_checksum(Operation op, uint32_t crc, const std::string &key, const std::string &val) {
     uint32_t key_len = key.length();
@@ -74,6 +97,22 @@ void write_data_block(std::fstream &ss_table_file, std::vector<Record> &data){
 
 }
 
+void write_bloom_filter_block(std::fstream &ss_table_file, uint64_t bit_array_size, uint32_t hash_func_cnt, const std::vector<uint8_t> &bloom_filter_bit_array){
+    uint32_t crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&bit_array_size), sizeof(bit_array_size));
+    ss_table_file.write(reinterpret_cast<char *>(&bit_array_size), sizeof(bit_array_size));
+
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&hash_func_cnt), sizeof(hash_func_cnt));
+    ss_table_file.write(reinterpret_cast<char *>(&hash_func_cnt), sizeof(hash_func_cnt));
+    
+    for(uint8_t i : bloom_filter_bit_array){
+        crc = crc32(crc, reinterpret_cast<const Bytef *>(&i), sizeof(i));
+        ss_table_file.write(reinterpret_cast<char *>(&i), sizeof(i));
+    }
+    
+    ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
+
+}
 
 // TODO: need to change this structure
 SsTableData SsTable::read_ss_table() {
@@ -190,10 +229,21 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
     // HEADER
     write_header_block(this->ss_table_file, this->ss_table_index ,static_cast<uint64_t>(mem_table.size()));
 
+    // BLOOM FILTER CALCS
+    uint64_t total_entry_cnt = mem_table.size();
+
+    double bloom_filter_bit_count =  -(total_entry_cnt * std::log(BLOOM_FILTER_TARGET_FP_RATE)) / (ln2 * ln2);
+    uint64_t bit_array_size = (std::ceil(bloom_filter_bit_count) + (BYTE_SIZE - 1)) / BYTE_SIZE;
+    std::vector<uint8_t> bloom_filter_bit_array(bit_array_size, 0);
+
+    uint32_t hash_func_cnt = std::max<uint32_t>(std::round((static_cast<double>(bit_array_size*BYTE_SIZE)/total_entry_cnt) * ln2), 1);
+    
     // DATA BLOCKS
     std::vector<Record> block;
     block.reserve(RECORDS_PER_BLOCK);
     for (const auto& [key, value] : mem_table) {
+        insert_to_bloom_filter(key, bloom_filter_bit_array, bit_array_size, hash_func_cnt);
+
         block.emplace_back(key, value);
 
         if (block.size() == RECORDS_PER_BLOCK) {
@@ -206,6 +256,7 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
     }
 
     // BLOOM FILTER
+    write_bloom_filter_block(ss_table_file, bit_array_size, hash_func_cnt, bloom_filter_bit_array);
 
 
     return ss_table_file.good();
