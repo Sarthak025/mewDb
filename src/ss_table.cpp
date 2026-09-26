@@ -146,94 +146,11 @@ void write_footer_block(std::fstream &ss_table_file, uint64_t bloom_filter_offse
     ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
 }
 
-// TODO: need to change this structure
-SsTableData SsTable::read_ss_table() {
-
-    SsTableData curr_data;
-
-    // Move to begining to the file
-    ss_table_file.seekg(0, std::ios::beg);
-
-    //start calculating checksum
-    uint32_t crc = crc32(0L, Z_NULL, 0);
-
-    ss_table_file.read(reinterpret_cast<char *>(&curr_data.magic_num), sizeof(curr_data.magic_num));
-
-    if(curr_data.magic_num != SS_TABLE_MAGIC_NUMBER){
-        throw std::runtime_error("corrupted ss_table...");
-    }
-
-	ss_table_file.read(reinterpret_cast<char *>(&curr_data.version_num), sizeof(curr_data.version_num));
-	ss_table_file.read(reinterpret_cast<char *>(&curr_data.ss_table_idx), sizeof(curr_data.ss_table_idx));
-    if (curr_data.ss_table_idx != ss_table_index) {
-        throw std::runtime_error("ss_table index mismatch...");
-    }
-	ss_table_file.read(reinterpret_cast<char *>(&curr_data.entry_cnt), sizeof(curr_data.entry_cnt));
-
-    crc = crc32(crc, reinterpret_cast<const Bytef *>(&curr_data.version_num), sizeof(curr_data.version_num));
-	crc = crc32(crc, reinterpret_cast<const Bytef *>(&curr_data.ss_table_idx), sizeof(curr_data.ss_table_idx));
-	crc = crc32(crc, reinterpret_cast<const Bytef *>(&curr_data.entry_cnt), sizeof(curr_data.entry_cnt));
-
-    //start reading entries from ss_table
-    uint32_t i = 1;
-    while (i <= curr_data.entry_cnt) {
-        i++;
-        Entry curr_record;
-        std::string val;
-
-
-        // Read operation
-        if(!ss_table_file.read(reinterpret_cast<char*>(&curr_record.op), sizeof(curr_record.op))) {
-            throw std::runtime_error("corrupted ss_table...");
-        }
-
-        // Read key
-        if (!ss_table_file.read(reinterpret_cast<char*>(&curr_record.key_len), sizeof(curr_record.key_len))) {
-            throw std::runtime_error("corrupted ss_table...");
-        }
-
-        curr_record.key.resize(curr_record.key_len);
-        if (!ss_table_file.read(curr_record.key.data(), curr_record.key_len)) {
-            throw std::runtime_error("corrupted ss_table...");
-        }
-
-        // Read value
-        if (!ss_table_file.read(reinterpret_cast<char*>(&curr_record.val_len), sizeof(curr_record.val_len))) {
-            throw std::runtime_error("corrupted ss_table...");
-        }
-
-        val.resize(curr_record.val_len);
-        if (!ss_table_file.read(val.data(), curr_record.val_len)) {
-            throw std::runtime_error("corrupted ss_table...");
-        }
-
-        crc = key_val_checksum(curr_record.op, crc, curr_record.key, val);
-
-        if(curr_record.op == Operation::del){
-            curr_record.val = std::nullopt;
-        }
-        else if (curr_record.op == Operation::set){
-            curr_record.val = val;
-        }
-
-        curr_data.records.push_back(curr_record);
-    }
-
-    uint32_t checksum;
-    ss_table_file.read(reinterpret_cast<char *>(&checksum), sizeof(checksum));
-
-    if(crc != checksum){
-        throw std::runtime_error("checksum for ss_table didnt match during read...");
-    }
-
-    return curr_data;
-}
 
 
 SsTable::SsTable(uint64_t table_index, OpenMode mode){
     std::string ss_table_file_name = SS_TABLE_FILE_NAME + "_" + std::to_string(table_index) + ".bin";
     ss_table_index = table_index;
-
     if(mode == OpenMode::read){
         if(std::filesystem::is_regular_file(ss_table_file_name)){
             ss_table_file.open(ss_table_file_name, std::ios::binary | std::ios::in);
@@ -253,6 +170,104 @@ SsTable::~SsTable(){
     ss_table_file.close();
 }
 
+SsTableData SsTable::read_ss_table() {
+
+    SsTableData curr_data;
+
+    // Move to begining to the file
+    ss_table_file.seekg(0, std::ios::beg);
+
+    // HEADER BLOCK
+    uint32_t header_crc = crc32(0L, Z_NULL, 0);
+    uint32_t header_crc_from_ss_table;
+
+    ss_table_file.read(reinterpret_cast<char *>(&curr_data.magic_num), sizeof(curr_data.magic_num));
+    if(curr_data.magic_num != SS_TABLE_MAGIC_NUMBER){
+        throw std::runtime_error("corrupted ss_table_idx" + std::to_string(ss_table_index) );
+    }
+    
+    ss_table_file.read(reinterpret_cast<char *>(&curr_data.version_num), sizeof(curr_data.version_num));
+    header_crc = crc32(header_crc, reinterpret_cast<const Bytef *>(&curr_data.version_num), sizeof(curr_data.version_num));
+
+    ss_table_file.read(reinterpret_cast<char *>(&curr_data.ss_table_idx), sizeof(curr_data.ss_table_idx));
+    header_crc = crc32(header_crc, reinterpret_cast<const Bytef *>(&curr_data.ss_table_idx), sizeof(curr_data.ss_table_idx));
+    if (curr_data.ss_table_idx != ss_table_index) {
+        throw std::runtime_error("ss_table index mismatch...");
+    }
+
+    ss_table_file.read(reinterpret_cast<char *>(&curr_data.entry_cnt), sizeof(curr_data.entry_cnt));
+    header_crc = crc32(header_crc, reinterpret_cast<const Bytef *>(&curr_data.entry_cnt), sizeof(curr_data.entry_cnt));
+    
+    ss_table_file.read(reinterpret_cast<char *>(&header_crc_from_ss_table), sizeof(header_crc_from_ss_table));
+    if(header_crc != header_crc_from_ss_table){
+        throw std::runtime_error("corrupted header:  ss_table_idx" + std::to_string(ss_table_index) );
+    }
+
+    // DATA BLOCKS
+    uint64_t total_entries = curr_data.entry_cnt;
+    while(total_entries > 0){
+        uint32_t block_crc = crc32(0L, Z_NULL, 0);
+        uint64_t block_entry_cnt;
+
+        ss_table_file.read(reinterpret_cast<char *>(&block_entry_cnt), sizeof(block_entry_cnt));
+        block_crc = crc32(block_crc, reinterpret_cast<const Bytef *>(&block_entry_cnt), sizeof(block_entry_cnt));
+        
+        if (block_entry_cnt == 0 || block_entry_cnt > total_entries) {
+            throw std::runtime_error("Invalid block entry count");
+        }
+
+        total_entries -= block_entry_cnt;
+        for (std::uint64_t i = 0; i < block_entry_cnt; ++i){
+            Entry curr_record;
+            std::string val;
+
+            // Read operation
+            if(!ss_table_file.read(reinterpret_cast<char*>(&curr_record.op), sizeof(curr_record.op))) {
+                throw std::runtime_error("corrupted data:  ss_table_idx" + std::to_string(ss_table_index) );
+            }
+
+            // Read key
+            if (!ss_table_file.read(reinterpret_cast<char*>(&curr_record.key_len), sizeof(curr_record.key_len))) {
+                throw std::runtime_error("corrupted data:  ss_table_idx" + std::to_string(ss_table_index) );
+            }
+
+            curr_record.key.resize(curr_record.key_len);
+            if (!ss_table_file.read(curr_record.key.data(), curr_record.key_len)) {
+                throw std::runtime_error("corrupted data:  ss_table_idx" + std::to_string(ss_table_index) );
+            }
+
+            // Read value
+            if (!ss_table_file.read(reinterpret_cast<char*>(&curr_record.val_len), sizeof(curr_record.val_len))) {
+                throw std::runtime_error("corrupted data:  ss_table_idx" + std::to_string(ss_table_index) );
+            }
+
+            val.resize(curr_record.val_len);
+            if (!ss_table_file.read(val.data(), curr_record.val_len)) {
+                throw std::runtime_error("corrupted data:  ss_table_idx" + std::to_string(ss_table_index) );
+            }
+
+            block_crc = key_val_checksum(curr_record.op, block_crc, curr_record.key, val);
+
+            if(curr_record.op == Operation::del){
+                curr_record.val = std::nullopt;
+            }
+            else if (curr_record.op == Operation::set){
+                curr_record.val = val;
+            }
+
+            curr_data.records.push_back(curr_record);
+        }
+        
+        uint32_t checksum;
+        ss_table_file.read(reinterpret_cast<char *>(&checksum), sizeof(checksum));
+
+        if(block_crc != checksum){
+            throw std::runtime_error("corrupted data:  ss_table_idx" + std::to_string(ss_table_index) );
+        }
+    }
+
+    return curr_data;
+}
 
 bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table){
 
