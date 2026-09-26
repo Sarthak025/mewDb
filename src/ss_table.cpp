@@ -114,6 +114,38 @@ void write_bloom_filter_block(std::fstream &ss_table_file, uint64_t bit_array_si
 
 }
 
+void write_sparse_index_block(std::fstream &ss_table_file, std::vector<std::pair<std::string, uint64_t>> &sparse_data){
+    uint32_t crc = crc32(0L, Z_NULL, 0);
+
+    uint64_t entry_cnt = sparse_data.size();
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&entry_cnt), sizeof(entry_cnt));
+    ss_table_file.write(reinterpret_cast<char *>(&entry_cnt), sizeof(entry_cnt));
+
+    for(auto &[key, offset] : sparse_data){
+        uint32_t key_len = key.length();
+        crc = crc32(crc, reinterpret_cast<const Bytef *>(&key_len), sizeof(key_len));
+	    crc = crc32(crc, reinterpret_cast<const Bytef *>(key.c_str()), key_len);
+        ss_table_file.write(reinterpret_cast<char *>(&key_len), sizeof(key_len));
+        ss_table_file.write(key.c_str(), key_len);
+
+        crc = crc32(crc, reinterpret_cast<const Bytef *>(&offset), sizeof(offset));
+        ss_table_file.write(reinterpret_cast<char *>(&offset), sizeof(offset));
+    }
+    ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
+}
+
+void write_footer_block(std::fstream &ss_table_file, uint64_t bloom_filter_offset, uint64_t sparse_index_offset){
+    uint32_t crc = crc32(0L, Z_NULL, 0);
+
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&bloom_filter_offset), sizeof(bloom_filter_offset));
+    ss_table_file.write(reinterpret_cast<char *>(&bloom_filter_offset), sizeof(bloom_filter_offset));
+
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&sparse_index_offset), sizeof(sparse_index_offset));
+    ss_table_file.write(reinterpret_cast<char *>(&sparse_index_offset), sizeof(sparse_index_offset));
+
+    ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
+}
+
 // TODO: need to change this structure
 SsTableData SsTable::read_ss_table() {
 
@@ -224,8 +256,6 @@ SsTable::~SsTable(){
 
 bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table){
 
-    // TODO: need to add return offsets to all blocks
-
     // HEADER
     write_header_block(this->ss_table_file, this->ss_table_index ,static_cast<uint64_t>(mem_table.size()));
 
@@ -237,6 +267,9 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
     std::vector<uint8_t> bloom_filter_bit_array(bit_array_size, 0);
 
     uint32_t hash_func_cnt = std::max<uint32_t>(std::round((static_cast<double>(bit_array_size*BYTE_SIZE)/total_entry_cnt) * ln2), 1);
+
+    // SPARSE INDEX CALCS
+    std::vector<std::pair<std::string, uint64_t>> sparse_data;
     
     // DATA BLOCKS
     std::vector<Record> block;
@@ -247,17 +280,28 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
         block.emplace_back(key, value);
 
         if (block.size() == RECORDS_PER_BLOCK) {
+            uint64_t block_offset = static_cast<uint64_t>(ss_table_file.tellp());
             write_data_block(ss_table_file, block);
+            sparse_data.push_back({block[0].first, block_offset});
             block.clear();
         }
     }
     if (!block.empty()) {
+        uint64_t block_offset = static_cast<uint64_t>(ss_table_file.tellp());
         write_data_block(ss_table_file, block);
+        sparse_data.push_back({block[0].first, block_offset});
     }
 
     // BLOOM FILTER
+    uint64_t bloom_filter_offset = static_cast<uint64_t>(ss_table_file.tellp());
     write_bloom_filter_block(ss_table_file, bit_array_size, hash_func_cnt, bloom_filter_bit_array);
 
+    // SPARSE INDEX BLOCK
+    uint64_t sparse_index_offset = static_cast<uint64_t>(ss_table_file.tellp());
+    write_sparse_index_block(ss_table_file, sparse_data);
+
+    // FOOTER BLOCK
+    write_footer_block(ss_table_file, bloom_filter_offset, sparse_index_offset);
 
     return ss_table_file.good();
 }
