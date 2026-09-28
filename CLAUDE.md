@@ -55,29 +55,33 @@ CLI REPL → MemTable → WAL → SSTables → Compaction → Bloom Filters → 
 | 3b | Practice: WAL write + recover standalone | ✅ Done |
 | 4 | SSTables + MemTable flush | ✅ Done (includes tombstone/delete fix) |
 | 5 | LSM Compaction | ✅ Done (core: full/manual compaction — auto-trigger + tiering deferred, see below) |
-| 6 | Bloom filters + sparse index | ⬜ |
-| 6a | Practice: standalone Bloom filter | ⬜ |
+| 6 | Bloom filters + sparse index | ✅ Done (core: dynamic per-file Bloom filter + sparse index, new block-based SSTable v2 format — see below) |
+| 6a | Practice: standalone Bloom filter | ✅ Done |
 | 7 | Benchmark tool | ⬜ |
 | 8 | TCP server + concurrency | ⬜ |
 | 9 | Replication + consistent hashing | ⬜ |
 
 ---
 
-## Current State (Phase 6 — Bloom filters + sparse index, not started)
+## Current State (Phase 6 core complete — Bloom filters + sparse index; SSTable format is now v2)
 
-**Phases 1–5 (core) complete**, including the tombstone/delete fix, full/manual LSM compaction, and exhaustive-test passes for both (see "Exhaustive test pass" sections below). All files building and tested. Full read/write/compact cycle (WAL → MemTable → SSTable flush → SSTable read-back → compaction → SSTable read-back, tombstone-aware throughout) works end-to-end and has been verified by actually building and running the project, not just reading the code. No known gaps remain in the core path. Deliberately deferred, not forgotten: automatic compaction triggering (currently `COMPACT` is manual-only) and a tiered/size-based compaction strategy — see "LSM Compaction" below for why these were scoped out of v1 and what would need to change to add them.
+**Phases 1–6 (core) complete.** Phase 6 replaced the entire SSTable file format (v1 → v2: a single flat entry list with one whole-file checksum → a block-based format with a Bloom filter and a sparse index, see "Bloom Filters + Sparse Index" below) and closed out the two read-cost problems that motivated it: a point lookup no longer needs to read+checksum a whole file just to learn a key isn't in it (Bloom filter skip-check), and a point lookup that does need to read a file only reads *one* ~10-record block, not the whole thing (sparse index). Full read/write/compact cycle (WAL → MemTable → SSTable v2 flush → SSTable v2 read-back → compaction → SSTable v2 read-back, tombstone-aware throughout) works end-to-end and has been verified by actually building and running the project — including a ~2,000-command adversarial pass and a two-process WAL-recovery test (see "Exhaustive test pass" under Phase 6 below). No known gaps remain in the core path. Deliberately deferred, not forgotten (unchanged since Phase 5): automatic compaction triggering (currently `COMPACT` is manual-only) and a tiered/size-based compaction strategy — see "LSM Compaction" below for why these were scoped out of v1 and what would need to change to add them.
+
+The full byte-level SSTable v2 schema lives in **`ss_table_schema.md`** (project root) — that file is the authoritative, up-to-date reference for the on-disk format; this file summarizes the *decisions and reasoning* behind it, not the byte layout itself, to avoid the two documents drifting apart.
 
 ### Completed files
 - `calc.cpp` — calculator REPL practice task
-- `CMakeLists.txt` — C++17, sources: `main.cpp`, `src/db_engine.cpp`, `src/wal.cpp`, `src/ss_table.cpp`, `src/manifest.cpp`; links zlib (`-lz`)
-- `main.cpp` — full REPL, all commands wired including `COMPACT`; `db_engine Db;` (no-arg constructor — filenames now come from `constants.h`); `EXIT`/`QUIT` comparison now trims surrounding whitespace via a small `trim()` helper (closes the item deferred at the end of Phase 4)
-- `include/constants.h` — every shared format constant lives here: `WAL_VERSION`/`WAL_MAGIC_NUMBER`, `SS_TABLE_VERSION`/`SS_TABLE_MAGIC_NUMBER`, `MANIFEST_VERSION`/`MANIFEST_MAGIC_CONST`, `enum class operation : uint8_t { set, del }` (replaces the old loose `SET`/`DELETE` constants, shared by WAL/`db_engine`/`ss_table`), file name constants (`WAL_FILE_NAME`, `SS_TABLE_FILE_NAME` — renamed from `SS_TABLE_NAME`, `MANIFEST_FILE_NAME`, `MANIFEST_TEMP_FILE_NAME` — all under `data/`), `MEM_TABLE_SIZE_LIMIT`, and the `open_mode` enum (`read`/`write`) used by `ss_table`
-- `include/db_engine.h` / `src/db_engine.cpp` — `db_engine` class; MemTable is `curr_mem_table` (renamed from `storage`), value type `std::optional<std::string>` (`nullopt` = tombstone); owns `wal*` and `manifest*` (no longer owns its own SSTable-index counter — always asks the manifest); both now constructed no-arg (`new wal()` / `new manifest()`, filenames read from `constants.h` internally rather than passed in — trades away constructor-injected test file paths, judged acceptable since this project's testing style has always been build-and-run against the real `data/` dir rather than isolated unit tests); `flush()` returns `bool`; public `exists()`/`get()`/`range()`/`prefix_scan()` all search SSTables (tombstone-aware), `exists_in_curr_mem_table()` is a private MemTable-only helper used internally by `set`/`del`/`recover_set`/`recover_del`; new `compact()` (see "LSM Compaction" below)
-- `include/wal.h` / `src/wal.cpp` — adds `truncate()` (close → reopen via `std::ofstream` with `trunc` → reopen `in|app`); `index` never resets, even across truncation (LSN-style, for future replication)
-- `include/ss_table.h` / `src/ss_table.cpp` — `write_to_ss_table()` (flush path, tombstone-aware); `read_ss_table()` does the one shared "open file, verify magic number, verify `ss_table_index` matches the filename, loop reading entries with per-read error checks, verify final checksum" pass and returns an in-memory `ss_table_data` — made **public** (was private) so `db_engine::compact()` can pull one file's raw `records` directly, since compaction needs the whole file's contents rather than a single-key/range/prefix view; `get_value_from_ss_table()` (single-key read, returns the 3-state `lookup_result`), `get_range_from_ss_table()`/`get_prefix_from_ss_table()`/`get_keys_from_ss_table()` (per-file multi-key read, returns tombstones included as `std::optional`-valued pairs) all still just call `read_ss_table()` once and operate on `data.records`. `open_mode::read`/`write` selects read vs. write for the constructor.
-- `include/manifest.h` / `src/manifest.cpp` — durable registry of valid SSTable indices; constructed no-arg (see `db_engine` note above); gained `replace_ss_table_indices()` (see "LSM Compaction" below)
+- `CMakeLists.txt` — C++17, sources: `main.cpp`, `src/db_engine.cpp`, `src/wal.cpp`, `src/ss_table.cpp`, `src/manifest.cpp`; links zlib (`-lz`) and xxHash (`find_package(xxHash CONFIG REQUIRED)`, `xxHash::xxhash` — needed for the Bloom filter's hashing, though `XXH_INLINE_ALL` means it's actually header-only)
+- `ss_table_schema.md` — authoritative byte-level SSTable v2 schema (Header/Data Blocks/Bloom Filter Block/Sparse Index Block/Footer); written collaboratively and kept current as the format was implemented — check this, not this file, for exact field layouts
+- `main.cpp` — full REPL, all commands wired including `COMPACT`; `DbEngine Db;` (no-arg constructor — filenames now come from `constants.h`); `EXIT`/`QUIT` comparison now trims surrounding whitespace via a small `trim()` helper (closes the item deferred at the end of Phase 4)
+- `include/constants.h` — every shared format constant lives here: `WAL_VERSION`/`WAL_MAGIC_NUMBER`, `SS_TABLE_VERSION`/`SS_TABLE_MAGIC_NUMBER` (version bumped `1`→`2` for the block-based format), `MANIFEST_VERSION`/`MANIFEST_MAGIC_CONST`, `enum class Operation : uint8_t { set, del }` (replaces the old loose `SET`/`DELETE` constants, shared by WAL/`DbEngine`/`SsTable`), file name constants (`WAL_FILE_NAME`, `SS_TABLE_FILE_NAME`, `MANIFEST_FILE_NAME`, `MANIFEST_TEMP_FILE_NAME` — all under `data/`), `MEM_TABLE_SIZE_LIMIT`, the `OpenMode` enum (`read`/`write`) used by `SsTable`, and the new v2-format constants: `RECORDS_PER_BLOCK` (10), `BYTE_SIZE` (8, used for bit/byte conversions), `FOOTER_SIZE` (20), `BLOOM_FILTER_TARGET_FP_RATE` (0.001 — must be `double`, not an integer type, see "Bugs found" below), `BLOOM_FILTER_SEED_1`/`BLOOM_FILTER_SEED_2` (6969/6767, the two xxHash seeds)
+- `include/db_engine.h` / `src/db_engine.cpp` — `DbEngine` class; MemTable is `curr_mem_table` (renamed from `storage`), value type `std::optional<std::string>` (`nullopt` = tombstone); owns `Wal*` and `Manifest*` (no longer owns its own SSTable-index counter — always asks the manifest); both now constructed no-arg (`new Wal()` / `new Manifest()`, filenames read from `constants.h` internally rather than passed in — trades away constructor-injected test file paths, judged acceptable since this project's testing style has always been build-and-run against the real `data/` dir rather than isolated unit tests); `flush()` returns `bool`; public `exists()`/`get()`/`range()`/`prefix_scan()` all search SSTables (tombstone-aware), `exists_in_curr_mem_table()` is a private MemTable-only helper used internally by `set`/`del`/`recover_set`/`recover_del`; `compact()` (see "LSM Compaction" below) — none of `db_engine.cpp`'s own logic needed to change for the v2 format, since it only ever calls `SsTable`'s public methods, which absorbed the format change entirely
+- `include/wal.h` / `src/wal.cpp` — adds `truncate()` (close → reopen via `std::ofstream` with `trunc` → reopen `in|app`); `index` never resets, even across truncation (LSN-style, for future replication); untouched by the Phase 6 format change (WAL format is independent of SSTable format)
+- `include/ss_table.h` / `src/ss_table.cpp` — the file that absorbed the entire v2 rewrite. See "Bloom Filters + Sparse Index" below for the full design and bug history. Public surface unchanged in shape from Phase 4/5 (`write_to_ss_table()`, `get_value_from_ss_table()`, `get_range_from_ss_table()`, `get_prefix_from_ss_table()`, `get_keys_from_ss_table()`, `read_ss_table()`) — callers in `db_engine.cpp` did not need to change at all, only the internals did. New free functions (block/footer/Bloom-filter/sparse-index read+write helpers, `insert_to_bloom_filter()`/`is_present_in_bloom_filter()`) live at file scope in `ss_table.cpp`, not as class methods, mirroring how `key_val_checksum()` already worked
+- `include/manifest.h` / `src/manifest.cpp` — durable registry of valid SSTable indices; constructed no-arg (see `DbEngine` note above); gained `replace_ss_table_indices()` (see "LSM Compaction" below); untouched by the Phase 6 format change
 - `practice/encoder.cpp` — binary encoder/decoder practice (complete)
 - `practice/wal.cpp` — standalone WAL write + recover practice (complete)
+- `practice/bloom_filter.cpp` — standalone Bloom filter practice (6a, complete) — see "Bloom Filters + Sparse Index" below for the design and the measured false-positive-rate investigation
 
 ### Correct response format
 ```
@@ -122,23 +126,14 @@ Bugs hit and fixed along the way, worth remembering for future review in this pr
 [checksum]       uint32_t  4 bytes   (CRC32 over version→val_of_data)
 ```
 
-### SSTable file format (binary, one file per flush, immutable once written)
+### SSTable file format — **superseded, see `ss_table_schema.md` for the current (v2) format**
+The format described in this section (a single flat entry list behind one whole-file checksum, `SS_TABLE_VERSION = 1`) was replaced during Phase 6 by a block-based format (`SS_TABLE_VERSION = 2`) with a Bloom filter and a sparse index — see "Bloom Filters + Sparse Index" below for why, and `ss_table_schema.md` for the exact byte layout. Kept here, collapsed, only as a historical note of what v1 looked like:
 ```
-[magic_number]   uint32_t  (SS_TABLE_MAGIC_NUMBER)
-[version]        uint8_t   (SS_TABLE_VERSION)
-[ss_table_index] uint64_t  (matches the number in the filename, e.g. ss_table_3.bin)
-[entry_count]    uint64_t  (needed because entries are variable-length and a footer follows with no delimiter)
---- repeated entry_count times ---
-[operation]      uint8_t   (set / del, same shared enum as WAL — del entries still write val_len=0/empty val)
-[key_len]        uint32_t
-[key]            char[]    variable
-[val_len]        uint32_t
-[val]            char[]    variable
---- end repeat ---
-[checksum]       uint32_t  (CRC32 over version→last entry, including each entry's operation byte;
-                            must read the WHOLE file before trusting anything — no early exit on match)
+[magic_number][version][ss_table_index][entry_count]
+--- repeated entry_count times: [operation][key_len][key][val_len][val] ---
+[checksum]   (CRC32 over version→last entry; whole file read before trusting anything)
 ```
-`get_value_from_ss_table()` returns `ss_table.h`'s `lookup_result` (`{lookup_status: not_found|tombstone|found, value}`), not a plain `std::optional` — see the tombstone/delete fix notes above for why a two-state optional isn't enough here.
+`get_value_from_ss_table()` returns `ss_table.h`'s `LookupResult` (`{status: not_found|tombstone|found, value}`), not a plain `std::optional` — see the tombstone/delete fix notes above for why a two-state optional isn't enough here. This 3-state shape carried over unchanged into v2.
 
 ### Manifest file format (`data/manifest.txt`, plain text, one value per line — deliberately NOT binary, since it's just a list of numbers)
 ```
@@ -184,6 +179,17 @@ Updates are never in-place edits: `add_new_ss_table_index()` rewrites the whole 
 - A monotonically-increasing counter (like the manifest's `next_ss_table_index`) lets you *prove* properties like "a freshly-issued value is always greater than every value issued before it" — useful for reasoning, but also a trap: a plausible-looking fix built on the wrong version of that fact (e.g. sorting by *value* to solve what is actually a *positional* ordering problem) can be a complete no-op without being obviously wrong ✅
 - Why compaction never needs to touch the WAL or MemTable: they protect exactly one kind of state (writes acknowledged but not yet durable as an SSTable), and compaction only ever operates on data that's already durable — two independent durability domains that never overlap, each with its own separate crash-safety mechanism (a replayable log for one, atomic durable-swap-then-delete for the other) ✅
 - Dropping a tombstone is only safe once nothing *older* remains that it could still be shadowing — precisely, only when the operation touching it spans every SSTable up to the oldest one that currently exists. Full compaction satisfies this trivially (it always touches everything); a partial/tiered compaction would need to actually check it ✅
+- A Bloom filter's asymmetry (false positives allowed, false negatives forbidden) isn't an arbitrary convention — a **positive** answer always requires a real read anyway to get the value, so there's no work to save on that path regardless of which direction the asymmetry runs; the *only* place a filter can ever save a real read is on a **negative** answer, so whichever answer comes "for free" must be the trustworthy one ✅
+- The Kirsch–Mitzenmacher double-hashing trick (`g_i = h1 + i·h2 mod m`, deriving k hash positions from just 2 real hash calls) is a real, standard technique — but it is *not* a perfect substitute for k truly independent hashes; measured against a from-scratch k-independent-hash baseline on identical keys, it produced a real, repeatable ~35% higher false-positive rate (0.136% vs. a 0.1% target) that persisted across many independent trials — a genuine, accepted engineering tradeoff (2 hash computations instead of k), not a bug ✅ (isolated via a controlled side-by-side comparison, not just theory)
+- Sizing a Bloom filter (`m` bits, `k` hash functions) from a target false-positive rate `p` and element count `n` is a *different* problem from measuring the false-positive rate of an already-sized filter — the two formulas look similar but solve for different unknowns, and reusing the wrong one produces a filter that "looks right" but is silently mis-sized ✅
+- `m` (a Bloom filter's bit-array size) is a *lower bound* — round it **up**, never to nearest and never down, when converting to a whole number of bits or bytes; rounding down measurably pushes the real false-positive rate above the target ✅ (found and fixed a real instance of this: applying the `(x+7)/8` integer ceiling-division trick directly to the *fractional* bit count before rounding it up to a whole number first, which silently under-allocates by up to a full byte in specific cases)
+- Persisting a Bloom filter's bit-array length as **bytes** rather than **bits** was a deliberate mid-implementation design change from the original schema draft: a reader can then allocate and read the exact right number of bytes with no ceiling-division of its own, at the cost of needing to remember to multiply by 8 everywhere a bit-index is computed (the `k`-sizing formula and the hash-index math) — getting this backwards (using the byte count where a bit count was needed) was a real bug, hit twice in two different spots ✅
+- A file format field's width (`uint32_t` vs `uint64_t`) must match *exactly* between writer and reader — this project hit the same "reader declares a narrower/wider local variable than what was actually written" bug **three separate times** across the v2 rewrite (a data block's `entry_cnt`, twice independently in two different functions, plus a sparse index entry's `key_len` in the opposite direction), each one silently misaligning every byte read afterward rather than failing cleanly at the point of the mistake ✅
+- When verifying a checksum, the *stored* checksum value must never be folded into the value you're computing to compare against it — it's the answer key, not more input data. Hit and fixed **twice** in two independently-written new read functions (footer, Bloom filter block) despite the correct pattern already existing elsewhere in the same file (header, data block) ✅
+- Unary minus on an unsigned type doesn't produce a negative number — it wraps to a huge positive value via modular arithmetic (`-uint32_t{20}` is `4294967276`, not `-20`); passing that into a signed API (like `seekg`'s offset parameter) doesn't "become negative" on the implicit widening conversion either, it stays a huge positive number pointing far outside the file. Same underlying class of surprise as unsigned loop-counter underflow, just showing up in offset arithmetic instead of a loop ✅ (found and fixed a real instance of this)
+- `std::pair`'s default `operator<` is lexicographic — if you search a sorted `vector<pair<K,V>>` using `upper_bound` with a fabricated/dummy second component, an *exact match* on the first component falls through to comparing the fabricated second value, which can silently reorder the result relative to what searching by the first component alone would give. The fix is a custom comparator that only ever looks at the key, never the fabricated value — found via a very specific, easy-to-miss symptom: every key worked *except* ones that happened to exactly equal one of the sorted array's own stored keys (in this project's case, a sparse index's own block-starting keys) ✅
+- `std::upper_bound`'s 4-argument (custom comparator) overload and its 3-argument (default `operator<`) overload are easy to conflate — passing `(first, last, comparator)` with the actual search value accidentally omitted doesn't call the comparator overload with a missing argument, it matches the *3-argument* overload instead, treating the comparator itself as the value to search for, and fails at compile time with a wall of "no viable `operator<`" candidate errors that don't obviously point back at the missing argument ✅
+- A non-`void` function that falls off its closing brace without a `return` on every path is undefined behavior, not a guaranteed "returns some default/empty value" — confirmed concretely: the compiler flags it (`-Wreturn-type`), and at runtime it manifested as a `std::bad_alloc` crash from a `std::vector` member whose internal state was never actually initialized ✅
 
 ### Naming convention
 - **PascalCase for all types** — classes, structs, and enums (e.g. `DbEngine`, `Wal`, `SsTable`, `Manifest`, `SsTableData`, `WalData`, `Entry`, `LookupResult`, `LookupStatus`, `Operation`, `OpenMode`)
@@ -249,6 +255,71 @@ No further bugs found. `compact()` is considered correct and closes out Phase 5'
 
 ---
 
+## Bloom Filters + Sparse Index (SSTable v2) — completed 2026-09-29, closes out Phase 6's core
+
+**The problem this solves:** compaction (Phase 5) bounds the *number* of SSTable files a read ever has to search, but does nothing about the *cost of searching each one that remains*. Two distinct costs: (1) a point lookup (`GET`/`EXISTS`/`DELETE`'s existence check) had to fully read and checksum-verify an entire SSTable file just to learn a key **isn't** in it — the single most common outcome, since a key lives in at most one file; (2) `RANGE`/`PREFIX_SCAN` materialized a whole file into memory to pull out a handful of matching entries. Two separate tools, not one: a **Bloom filter** (a cheap, in-memory "can I skip this file entirely?" check) attacks (1); a **sparse index** (jump near the right spot in a sorted file instead of scanning it linearly) attacks (2).
+
+**Practice 6a (standalone Bloom filter) — design landed:** `n = 100`, target `p = 0.1%` → `m = -(n·ln p)/(ln 2)² ≈ 1437.76`, rounded **up** (never to nearest, never down — `m` is a lower bound on hitting the target rate) to `1438` bits → byte-aligned to `180` bytes (`1440` bits allocated) → `k = (m/n)·ln 2 ≈ 9.97` → `10`. Bit storage: `vector<uint8_t>` with manual bit-packing (not `vector<bool>`, whose packed/proxy-reference behavior is a known footgun). Hash derivation: xxHash (`XXH3_64bits_withSeed`) with two seeds (`6767`/`6969`), combined via the Kirsch–Mitzenmacher trick `g_i = h1 + i·h2 mod m` to derive all `k` bit positions from just 2 real hash calls.
+
+**The measured false-positive-rate investigation** (the most substantial finding from 6a): across 5 independent trials (500,000 total probe queries), the measured false-positive rate landed consistently around **0.136%**, not the 0.1% designed for — and with that many samples, ~8 standard deviations from the target, this was real, not noise. Root-caused via a controlled comparison: same keys, same `m`/`k`/`n`, only the hash-derivation method varied — `h1 + i·h2` gave 0.136%, swapping in `k` fully independent hash calls on the *identical* keys gave 0.112% (within normal noise of 0.1%). Conclusion: the double-hashing trick is a real, accepted tradeoff (2 hash computations instead of `k`), not a bug — **deliberately kept**, since the absolute cost (an occasional extra wasted disk read) was judged not worth paying `k`× the hashing on every `SET`/`GET` forever.
+
+**Sparse index practice — deliberately skipped**, not deferred. The plan was "standalone sparse index practice first, then integrate both together," but the practice design that came up (simulating blocks as an in-memory `vector<vector<pair<string,string>>>`, no real file) was recognized to remove the one thing worth practicing — real byte-offset tracking and `seekg`/`tellp` mechanics — before any code was written. Went straight to the real implementation instead.
+
+**SSTable v2 format — full byte layout in `ss_table_schema.md`; the design principle that shaped it:** every section is either **fixed-size** (Header, Footer) or **self-terminating** (carries its own count, so a reader can parse and checksum-verify it without consulting anything outside itself) — Data Blocks (target `RECORDS_PER_BLOCK = 10` entries, last block may hold fewer), a Bloom Filter Block, and a Sparse Index Block (one `(first key, block offset)` entry per data block). The **Footer** is the only place any cross-reference lives at all — two offsets (`bloom_filter_offset`, `sparse_index_offset`), each independently checksummed — because every other boundary in the file is derivable from those two plus each block's own self-terminating structure.
+
+**Bloom filter/sparse index sizing is computed dynamically, per file, at write time** — `n` is always the real entry count about to be written (`mem_table.size()`, or the merged map's size for `compact()`), never hardcoded. This was a real design correction: the practice's `n = 100` was only ever a test fixture; the real system's `flush()` is byte-size-triggered (deliberately, so entry count doesn't bound RAM if value sizes vary — an existing Phase 4 decision, unchanged), so real SSTables have a genuinely variable entry count, and a fixed-size Bloom filter would have been badly mis-sized for anything that wasn't exactly 100 entries.
+
+**The Bloom filter block persists the bit array's length in *bytes*, not bits** — a deliberate deviation from the original schema draft (which specified bits, with a reader deriving byte length via `ceil(m/8)`). Storing bytes directly means a reader never redoes a ceiling-division that has to exactly match what the writer did — one less place for the two to silently drift apart. The cost: every place that needs *bits* (the `k`-sizing formula, and the `hash % ...` indexing at both write and read time) must remember to multiply the stored byte count by 8 first — getting this backwards was a real, repeated bug (see below).
+
+**The read path is split into two independent shapes, matching the two problems above:**
+- **Point lookup** (`get_value_from_ss_table`, used by `GET`/`EXISTS`): read the footer → check the Bloom filter (definitely-absent ⇒ skip this file) → `upper_bound` + step back on the sparse index to find the one candidate block (`begin()` result ⇒ key smaller than everything in this file ⇒ not present) → read that one block → linear-scan its ~10 entries. A tombstone found here **stops the search immediately** (same shadowing rule as always) rather than falling through to older files; "scanned the correctly-identified block, key not there" correctly concludes "not in this file at all" without checking anything else, since blocks are sorted sub-ranges of a sorted file.
+- **Full scan** (`read_ss_table`, feeding `KEYS`/`RANGE`/`PREFIX_SCAN`/`compact()`): walk data blocks sequentially from right after the header, never touching the Bloom filter, sparse index, or footer at all — these commands need to potentially see most/all keys anyway, so the skip-optimizations don't help them. Stops via the header's own `entry_count` field. This was examined against this project's own "don't trust redundant/informational state as authoritative" lesson (`num_ss_tables`, `next_index`) and judged safe specifically *because* `entry_count` is sourced from the exact same variable that drives the block-split loop in the same write call (no independent-drift path the way those earlier bugs had), and is now itself checksum-protected as part of the header — a corrupted count would be caught there, before the block loop ever starts.
+
+### Bugs found and fixed during the v2 rewrite
+
+An unusually long list — this was a full file-format rewrite, not one algorithm — worth keeping as a pattern library, same spirit as the Phase 4/5 lists above. Grouped by where they were found:
+
+**Practice 6a:** missing `#include <algorithm>`/`<cctype>` (worked only via transitive includes); missing newline on `GET`'s REPL output (broke scripted testing, since consecutive results glued together with no delimiter); a dead duplicate `bloomFilter_idx` variable; an unused `mpp` map left over from copying the REPL pattern.
+
+**Write path (`write_to_ss_table` and its helpers):**
+1. `write_data_block` computed `entry_cnt` and folded it into the checksum, but never actually wrote it to the file — broke the self-terminating design outright.
+2. `BLOOM_FILTER_TARGET_FP_RATE` declared `constexpr uint32_t` and assigned `0.001` — silently truncated to `0`.
+3. `hash_func_cnt` (`k`) computed from the byte count instead of the bit count — off by a factor of 8 (gave `k=1` instead of `k=10` for the exact case already validated in practice).
+4. The byte-ceiling-division was applied directly to the raw *fractional* bit count instead of a properly rounded-up whole number first — could silently under-allocate by up to a full byte (concrete counterexample: a fractional count of `1440.1` needs `181` bytes; the buggy formula gave `180`).
+5. `write_bloom_filter_block` took the bit-array `vector` by value instead of `const&` — an unnecessary full copy on every flush/compact.
+6. `ln2` and `BYTE_SIZE` were mutable, non-`const`, externally-linked file-scope globals — fixed to `const` (`BYTE_SIZE` also relocated to `constants.h`, next to its siblings).
+7. The sparse index never got an entry for the file's **trailing partial data block** — confirmed via direct byte-level inspection of a real written file (3 real data blocks, only 2 sparse index entries); any key living only in that last block was unreachable by point lookup.
+8. `write_sparse_index_block` — the exact same "computed but never written" `entry_cnt` bug as #1, independently reintroduced in a new function.
+9. A dead `header_offset` local (computed via `tellp()`, never used) — removed.
+10. **Known, accepted, open gap:** `total_entry_cnt == 0` divides by zero in the `k`-sizing formula (well-defined for `double`, but the subsequent `uint32_t` cast of the resulting `inf`/`nan` is UB) — deliberately deferred rather than fixed, on the judgment that it's not yet known to be reachable.
+
+**Read path (`read_ss_table`, rewritten for blocks):**
+11. The per-block `entry_cnt` was read into a `uint32_t` local where the actual on-disk field is `uint64_t` (8 bytes written, 4 read) — misaligned every byte read afterward.
+12. `key_val_checksum` was called **twice** per entry — guaranteed checksum mismatch on every read, since the writer only folds each entry in once.
+13. `while(entry_cnt--)` — decrementing an unsigned `0` wraps to `UINT64_MAX`; harmless *only* because nothing read the variable again afterward, replaced on principle with an explicit-index `for` loop.
+14. A defensive `block_entry_cnt > total_entries` guard was **added proactively** (not requested) — self-recognized as preventing the exact "near-infinite loop/hang from a corrupted count" bug class already hit once in the v1 reader (see Phase 4's bug list) from recurring in the new block-based one.
+
+**Point-lookup path (`get_value_from_ss_table`, footer/Bloom-filter/sparse-index reads):**
+15. Both `read_footer_block` and the Bloom filter block reader folded the just-read *stored* checksum value into the running CRC before comparing against it — guaranteed mismatch, even on a genuinely valid file. The correct pattern (don't fold the stored value in) already existed elsewhere in the same file (header, data block reads) but wasn't applied to these two new functions at first.
+16. `ss_table_file.seekg(-FOOTER_SIZE, std::ios::end)` — `FOOTER_SIZE` is `uint32_t`; unary minus on an unsigned type wraps to a huge positive value (`4294967276`, not `-20`) rather than becoming negative, so this tried to seek billions of bytes past the end of the file. Fixed with an explicit signed cast before negating.
+17. `DataBlockData::entry_cnt` declared `uint32_t` where the real field is `uint64_t` — same class of bug as #11, in a new struct.
+18. `read_sparse_index_block`'s local `key_len` declared `uint64_t` where the real field (matching every other `key_len` in the format) is `uint32_t` — the opposite-direction version of the same width-mismatch bug.
+19. `read_data_block_by_offset` was missing its `return data;` entirely — fell off the end of a non-`void` function (undefined behavior). Confirmed two ways: the compiler's own `-Wreturn-type` warning, and a runtime `std::bad_alloc` crash from touching the never-initialized `std::vector` member.
+20. A redundant duplicate call to `read_footer_block` (read the whole footer twice just to get its two different fields separately) — harmless but wasteful, consolidated to one call.
+21. **The most subtle bug of the rewrite:** the sparse-index point lookup searched with `std::upper_bound(..., std::make_pair(search_key, 0))`. `std::pair`'s default comparison is lexicographic — if the first elements are equal, it falls back to comparing the second. Since the fabricated second value (`0`) is always smaller than any real stored byte offset, an *exact* key match against a sparse index's own stored key made the search pair compare as "less than" the real entry, throwing off `upper_bound`'s result specifically and only for keys that exactly equal one of the sparse index's own indexed keys (i.e., every block's first key). Surfaced by the extensive test pass below (`key00` — a real, tombstoned key — incorrectly reported `not_found`). Fixed with a custom comparator that only ever compares the key string, never a fabricated value. A follow-up mechanical slip while integrating the fix (the actual search-value argument was accidentally dropped, leaving only 3 arguments where `upper_bound`'s comparator overload needs 4) was caught immediately at compile time.
+
+### Exhaustive test pass — completed 2026-09-29, closes out Phase 6's core
+
+Ran a full adversarial pass against the real REPL binary (not synthetic unit probes) covering the whole command surface against the new format:
+1. 300 keys sized to force ~7 flushes (7 SSTables, multiple 10-record blocks each) — all `SET`s and immediate `GET`s back matched exactly.
+2. Deleted every 7th key (43 tombstones) and overwrote every 11th non-deleted key with a new value, then forced another flush so both landed on disk rather than staying in memory — `GET`/`EXISTS`/`KEYS`/`RANGE`/`PREFIX_SCAN` all correct across all 400 live keys (deleted ⇒ `NOT_FOUND`/`FALSE`, overwritten ⇒ newest value, `KEYS` membership exact).
+3. `COMPACT`, then re-ran the *entire* check from (2) again against the single merged file — identical results. This incidentally exercised all 40 block boundaries in the compacted file (400 keys ÷ 10/block), since every individual key passed.
+4. Crash/restart persistence across **two separate process runs** on the same `data/`: wrote 2 new keys small enough to stay WAL-only (unflushed), re-deleted an already-tombstoned key (correctly `NOT_FOUND`, confirming the exists-before-delete check still works against v2), exited, then started a **fresh process** — WAL replay correctly recovered both new keys, the old tombstone was still gone, and the final `KEYS` count matched the expected total (359) exactly.
+
+Zero errors, zero crashes, across roughly 2,000 commands. `compact()` needed **no changes at all** for the v2 format — it only ever calls `SsTable`'s public methods, same as before.
+
+---
+
 ## Key Patterns Already Established
 
 **REPL pattern** (from `calc.cpp`):
@@ -274,24 +345,28 @@ loop:
 ```
 mewDb/
 ├── CLAUDE.md              ← this file
-├── CMakeLists.txt         ← complete and building cleanly
-├── main.cpp               ← full REPL, all commands wired incl. COMPACT, db_engine Db; (no-arg ctor), trim() for EXIT/QUIT
+├── ss_table_schema.md     ← authoritative SSTable v2 byte-level format (Header/Data Blocks/
+│                            Bloom Filter Block/Sparse Index Block/Footer)
+├── CMakeLists.txt         ← complete and building cleanly; links zlib + xxHash
+├── main.cpp               ← full REPL, all commands wired incl. COMPACT, DbEngine Db; (no-arg ctor), trim() for EXIT/QUIT
 ├── calc.cpp               ← practice REPL (complete, not part of main build)
 ├── include/
-│   ├── constants.h        ← all shared format constants + open_mode enum
-│   ├── db_engine.h        ← db_engine class (owns wal*, manifest*; compact())
-│   ├── wal.h              ← wal class (write, recover, truncate; no-arg ctor)
-│   ├── ss_table.h         ← ss_table class (write_to_ss_table, get_value_from_ss_table, public read_ss_table)
-│   └── manifest.h         ← manifest class (durable SSTable index registry; replace_ss_table_indices)
+│   ├── constants.h        ← all shared format constants + OpenMode enum + v2 constants (RECORDS_PER_BLOCK,
+│   │                        BYTE_SIZE, FOOTER_SIZE, BLOOM_FILTER_TARGET_FP_RATE, BLOOM_FILTER_SEED_1/2)
+│   ├── db_engine.h        ← DbEngine class (owns Wal*, Manifest*; compact()) — unchanged by the v2 rewrite
+│   ├── wal.h              ← Wal class (write, recover, truncate; no-arg ctor) — unchanged by the v2 rewrite
+│   ├── ss_table.h         ← SsTable class — same public surface as before, v2 internals (see ss_table_schema.md)
+│   └── manifest.h         ← Manifest class (durable SSTable index registry; replace_ss_table_indices) — unchanged
 ├── src/
-│   ├── db_engine.cpp      ← db_engine implementation (curr_mem_table, tombstone-aware, + WAL + SSTable + manifest + compact)
+│   ├── db_engine.cpp      ← DbEngine implementation (curr_mem_table, tombstone-aware, + WAL + SSTable + manifest + compact)
 │   ├── wal.cpp            ← WAL implementation (write, recover, truncate, checksum)
-│   ├── ss_table.cpp       ← SSTable implementation (write path + checksum-verified read path)
+│   ├── ss_table.cpp       ← SSTable v2 implementation — block/footer/Bloom-filter/sparse-index write+read helpers,
+│   │                        point-lookup path (get_value_from_ss_table) and full-scan path (read_ss_table)
 │   └── manifest.cpp       ← manifest implementation (load-or-create, write-then-atomic-rename, replace_ss_table_indices)
 ├── practice/
 │   ├── encoder.cpp        ← binary encoder/decoder practice (complete)
-│   └── wal.cpp            ← standalone WAL write + recover practice (complete)
-├── data/                  ← runtime output: wal, ss_table_N.bin, manifest.txt (wal is gitignored;
-│                            manifest.txt/ss_table_*.bin are NOT yet — see note below)
+│   ├── wal.cpp            ← standalone WAL write + recover practice (complete)
+│   └── bloom_filter.cpp   ← standalone Bloom filter practice (6a, complete)
+├── data/                  ← runtime output: wal.bin, ss_table_N.bin (v2 format), manifest.txt — gitignored wholesale
 └── build/                 ← generated by cmake (gitignored)
 ```

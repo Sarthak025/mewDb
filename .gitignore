@@ -74,4 +74,5 @@ Testing/
 .vscode
 .clang-format
 
-data/
+data/*
+!data/.gitkeep
