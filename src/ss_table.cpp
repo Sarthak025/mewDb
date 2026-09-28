@@ -14,6 +14,20 @@
 const double ln2 = std::log(2.0);
 using Record = std::pair<std::string, std::optional<std::string>>;
 
+struct FooterData {
+    uint64_t bloom_filter_offset;
+    uint64_t sparse_index_offset;
+};
+struct SparseIndexData {
+    uint64_t num_data_blocks;
+    std::vector<std::pair<std::string, uint64_t>> sparse_data;
+};
+
+struct DataBlockData {
+    uint64_t entry_cnt;
+    std::vector<Entry> records;
+};
+
 uint64_t xxhash(const std::string &key, uint64_t seed) {
 	return XXH3_64bits_withSeed(key.data(), key.size(), seed);
 }
@@ -31,6 +45,25 @@ void insert_to_bloom_filter(const std::string &key, std::vector<uint8_t> &bloomF
 
 		bloomFilter[byte_idx] |= (1u << bit_offset);
 	}
+}
+
+bool is_present_in_bloom_filter(const std::string &key, const uint32_t hash_func_cnt, std::vector<uint8_t> &bloom_filter) {
+	uint64_t h1 = xxhash(key, BLOOM_FILTER_SEED_1);
+	uint64_t h2 = xxhash(key, BLOOM_FILTER_SEED_2);
+
+	for (uint64_t i = 0; i < hash_func_cnt; i++) {
+		uint64_t hash = h1 + i * h2;
+
+		uint64_t bit_idx = hash % (bloom_filter.size()*BYTE_SIZE);
+        uint64_t byte_idx = bit_idx / BYTE_SIZE;
+		uint64_t bit_offset = bit_idx % BYTE_SIZE;
+
+		uint8_t temp = bloom_filter[byte_idx];
+		if ((temp & (1u << bit_offset)) == 0) {
+			return false;
+		}
+	}
+	return true;
 }
 
 uint32_t key_val_checksum(Operation op, uint32_t crc, const std::string &key, const std::string &val) {
@@ -117,9 +150,9 @@ void write_bloom_filter_block(std::fstream &ss_table_file, uint64_t bit_array_si
 void write_sparse_index_block(std::fstream &ss_table_file, std::vector<std::pair<std::string, uint64_t>> &sparse_data){
     uint32_t crc = crc32(0L, Z_NULL, 0);
 
-    uint64_t entry_cnt = sparse_data.size();
-    crc = crc32(crc, reinterpret_cast<const Bytef *>(&entry_cnt), sizeof(entry_cnt));
-    ss_table_file.write(reinterpret_cast<char *>(&entry_cnt), sizeof(entry_cnt));
+    uint64_t num_data_blocks = sparse_data.size();
+    crc = crc32(crc, reinterpret_cast<const Bytef *>(&num_data_blocks), sizeof(num_data_blocks));
+    ss_table_file.write(reinterpret_cast<char *>(&num_data_blocks), sizeof(num_data_blocks));
 
     for(auto &[key, offset] : sparse_data){
         uint32_t key_len = key.length();
@@ -146,7 +179,135 @@ void write_footer_block(std::fstream &ss_table_file, uint64_t bloom_filter_offse
     ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
 }
 
+FooterData read_footer_block(std::fstream &ss_table_file) {
+    ss_table_file.seekg(-static_cast<int64_t>(FOOTER_SIZE), std::ios::end);
 
+    FooterData data;
+    uint32_t footer_checksum;
+    uint32_t footer_crc = crc32(0L, Z_NULL, 0);
+
+    ss_table_file.read(reinterpret_cast<char *>(&data.bloom_filter_offset), sizeof(data.bloom_filter_offset));
+    footer_crc = crc32(footer_crc, reinterpret_cast<const Bytef *>(&data.bloom_filter_offset), sizeof(data.bloom_filter_offset));
+
+    ss_table_file.read(reinterpret_cast<char *>(&data.sparse_index_offset), sizeof(data.sparse_index_offset));
+    footer_crc = crc32(footer_crc, reinterpret_cast<const Bytef *>(&data.sparse_index_offset), sizeof(data.sparse_index_offset));
+    
+    ss_table_file.read(reinterpret_cast<char *>(&footer_checksum), sizeof(footer_checksum));
+    if(footer_checksum != footer_crc){
+        throw std::runtime_error("corrupted footer");
+    }
+
+    return data;
+}
+
+SparseIndexData read_sparse_index_block(std::fstream &ss_table_file, uint64_t sparse_index_offset){
+    ss_table_file.seekg(sparse_index_offset, std::ios::beg);
+
+    SparseIndexData data;
+    uint32_t sparse_index_checksum;
+    uint32_t sparse_crc = crc32(0L, Z_NULL, 0);
+
+    ss_table_file.read(reinterpret_cast<char *>(&data.num_data_blocks), sizeof(data.num_data_blocks));
+    sparse_crc = crc32(sparse_crc, reinterpret_cast<const Bytef *>(&data.num_data_blocks), sizeof(data.num_data_blocks));
+
+    for(uint64_t i = 0; i < data.num_data_blocks ; i++){
+        uint32_t key_len;
+        std::string key;
+        uint64_t offset;
+        // Read key
+        if (!ss_table_file.read(reinterpret_cast<char*>(&key_len), sizeof(key_len))) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
+
+        key.resize(key_len);
+        if (!ss_table_file.read(key.data(), key_len)) {
+            throw std::runtime_error("corrupted ss_table...");
+        }
+        sparse_crc = crc32(sparse_crc, reinterpret_cast<const Bytef *>(&key_len), sizeof(key_len));
+	    sparse_crc = crc32(sparse_crc, reinterpret_cast<const Bytef *>(key.c_str()), key_len);
+
+        // Read offset
+        ss_table_file.read(reinterpret_cast<char *>(&offset), sizeof(offset));
+        sparse_crc = crc32(sparse_crc, reinterpret_cast<const Bytef *>(&offset), sizeof(offset));
+
+        data.sparse_data.push_back({key, offset});
+    }
+    
+    ss_table_file.read(reinterpret_cast<char *>(&sparse_index_checksum), sizeof(sparse_index_checksum));
+    if(sparse_index_checksum != sparse_crc){
+        throw std::runtime_error("corrupted sparse indices");
+    }
+
+    return data;
+}
+
+DataBlockData read_data_block_by_offset(std::fstream &ss_table_file, uint64_t offset){
+    ss_table_file.seekg(offset, std::ios::beg);
+
+    DataBlockData data;
+    uint32_t data_crc = crc32(0L, Z_NULL, 0);
+    ss_table_file.read(reinterpret_cast<char *>(&data.entry_cnt), sizeof(data.entry_cnt));
+    data_crc = crc32(data_crc, reinterpret_cast<const Bytef *>(&data.entry_cnt), sizeof(data.entry_cnt));
+
+    if (!data.entry_cnt) {
+        throw std::runtime_error("Invalid block entry count");
+    }
+
+    for(uint64_t i = 0; i < data.entry_cnt; i++){
+        Entry curr_record;
+        std::string val;
+
+        // Read operation
+        if(!ss_table_file.read(reinterpret_cast<char*>(&curr_record.op), sizeof(curr_record.op))) {
+            throw std::runtime_error("corrupted data");
+        }
+
+        // Read key
+        if (!ss_table_file.read(reinterpret_cast<char*>(&curr_record.key_len), sizeof(curr_record.key_len))) {
+            throw std::runtime_error("corrupted data");
+        }
+
+        curr_record.key.resize(curr_record.key_len);
+        if (!ss_table_file.read(curr_record.key.data(), curr_record.key_len)) {
+            throw std::runtime_error("corrupted data");
+        }
+
+        // Read value
+        if (!ss_table_file.read(reinterpret_cast<char*>(&curr_record.val_len), sizeof(curr_record.val_len))) {
+            throw std::runtime_error("corrupted data");
+        }
+
+        val.resize(curr_record.val_len);
+        if (!ss_table_file.read(val.data(), curr_record.val_len)) {
+            throw std::runtime_error("corrupted data");
+        }
+
+        data_crc = key_val_checksum(curr_record.op, data_crc, curr_record.key, val);
+
+        if(curr_record.op == Operation::del){
+            curr_record.val = std::nullopt;
+        }
+        else if (curr_record.op == Operation::set){
+            curr_record.val = val;
+        }
+
+        data.records.push_back(curr_record);
+    }
+        
+    uint32_t checksum;
+    ss_table_file.read(reinterpret_cast<char *>(&checksum), sizeof(checksum));
+
+    if(data_crc != checksum){
+        throw std::runtime_error("corrupted data");
+    }
+
+    return data;
+
+}
+
+
+
+//______________________________________________________________________________________________________________________________________________________________________________________________________
 
 SsTable::SsTable(uint64_t table_index, OpenMode mode){
     std::string ss_table_file_name = SS_TABLE_FILE_NAME + "_" + std::to_string(table_index) + ".bin";
@@ -169,6 +330,7 @@ SsTable::SsTable(uint64_t table_index, OpenMode mode){
 SsTable::~SsTable(){
     ss_table_file.close();
 }
+
 
 SsTableData SsTable::read_ss_table() {
 
@@ -269,6 +431,7 @@ SsTableData SsTable::read_ss_table() {
     return curr_data;
 }
 
+
 bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table){
 
     // HEADER
@@ -321,28 +484,69 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
     return ss_table_file.good();
 }
 
-// TODO: funtion needs reworking
-LookupResult SsTable::get_value_from_ss_table(const std::string &search_key){
 
+LookupResult SsTable::get_value_from_ss_table(const std::string &search_key){
     LookupResult result = {
         LookupStatus::not_found,
         std::nullopt
     };
 
-    SsTableData data = this->read_ss_table();
-    for(const auto &rec : data.records){
-        if (rec.key == search_key) {
-            if(rec.op == Operation::del){
+    // Check bloomfilter first
+    FooterData footer_data = read_footer_block(ss_table_file);
+    uint64_t bloom_filter_offset = footer_data.bloom_filter_offset;
+    ss_table_file.seekg(bloom_filter_offset, std::ios::beg);
+
+    uint32_t bloom_crc = crc32(0L, Z_NULL, 0);
+    uint64_t bit_array_size;
+    uint32_t hash_func_cnt;
+    uint32_t bloom_filter_checksum;
+
+    ss_table_file.read(reinterpret_cast<char *>(&bit_array_size), sizeof(bit_array_size));
+    bloom_crc = crc32(bloom_crc, reinterpret_cast<const Bytef *>(&bit_array_size), sizeof(bit_array_size));
+
+    ss_table_file.read(reinterpret_cast<char *>(&hash_func_cnt), sizeof(hash_func_cnt));
+    bloom_crc = crc32(bloom_crc, reinterpret_cast<const Bytef *>(&hash_func_cnt), sizeof(hash_func_cnt));
+
+    std::vector<uint8_t> bloom_filter(bit_array_size,0);
+    for(uint64_t i = 0; i < bit_array_size; i++){
+        ss_table_file.read(reinterpret_cast<char *>(&bloom_filter[i]), sizeof(bloom_filter[i]));
+        bloom_crc = crc32(bloom_crc, reinterpret_cast<const Bytef *>(&bloom_filter[i]), sizeof(bloom_filter[i]));
+    }
+
+    ss_table_file.read(reinterpret_cast<char *>(&bloom_filter_checksum), sizeof(bloom_filter_checksum));
+    if(bloom_crc != bloom_filter_checksum){
+        throw std::runtime_error("corrupted bloom filter");
+    }
+
+    // bloom filter says no
+    if(!is_present_in_bloom_filter(search_key, hash_func_cnt, bloom_filter)){
+        return result;
+    }
+
+    // bloomfilter says maybe
+    SparseIndexData sparse_data = read_sparse_index_block(ss_table_file, footer_data.sparse_index_offset);
+
+    // std::pair<std::string, uint64_t> temp = sparse_data.sparse_data;
+    auto it = std::upper_bound(sparse_data.sparse_data.begin(), sparse_data.sparse_data.end(), std::make_pair(search_key, uint64_t{0}));
+    if (it != sparse_data.sparse_data.begin()) {
+        --it;
+        uint64_t block_offset = it->second;
+        DataBlockData block_data = read_data_block_by_offset(ss_table_file, block_offset);
+
+        for(auto &entry : block_data.records){
+            if(entry.key != search_key) continue;
+
+            if(entry.op == Operation::del){
                 result.status = LookupStatus::tombstone;
                 result.value = std::nullopt;
             }
-            else if (rec.op == Operation::set){
+            else if (entry.op == Operation::set){
                 result.status = LookupStatus::found;
-                result.value = rec.val;
+                result.value = entry.val;
             }
         }
     }
-    
+
     return result;
 }
 

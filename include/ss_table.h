@@ -43,7 +43,7 @@
 // uint64_t bit_array_size;
 // uint32_t hash_func_cnt;
 // uint8_t[] bit_array;
-// uint32 bloom_filter_checksum;
+// uint32_t bloom_filter_checksum;
 //________________________________________________________________________________________________________________________________
 
 // SPARSE INDEX BLOCK
