@@ -527,7 +527,10 @@ LookupResult SsTable::get_value_from_ss_table(const std::string &search_key){
     SparseIndexData sparse_data = read_sparse_index_block(ss_table_file, footer_data.sparse_index_offset);
 
     // std::pair<std::string, uint64_t> temp = sparse_data.sparse_data;
-    auto it = std::upper_bound(sparse_data.sparse_data.begin(), sparse_data.sparse_data.end(), std::make_pair(search_key, uint64_t{0}));
+    auto it = std::upper_bound(sparse_data.sparse_data.begin(), sparse_data.sparse_data.end(), search_key,
+    [](const std::string &key, const std::pair<std::string, uint64_t> &entry) {
+        return key < entry.first;
+    });
     if (it != sparse_data.sparse_data.begin()) {
         --it;
         uint64_t block_offset = it->second;
