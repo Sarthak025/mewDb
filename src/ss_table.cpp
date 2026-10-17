@@ -3,6 +3,8 @@
 #include "ss_table.h"
 #include "constants.h"
 #include "manifest.h"
+#include <algorithm>
+#include <stdexcept>
 #include <string>
 #include <cstdint>
 #include <zlib.h>

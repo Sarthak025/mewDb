@@ -39,5 +39,5 @@ inline const std::string MANIFEST_TEMP_FILE_NAME = "data/temp_manifest.txt";
 
 
 // DB_ENGINE CONSTANTS
-constexpr uint64_t MEM_TABLE_SIZE_LIMIT = 1e3;
+const uint64_t MEM_TABLE_SIZE_LIMIT = 1e3;
 

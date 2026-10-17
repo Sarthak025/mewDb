@@ -6,6 +6,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 
 std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const std::vector<uint64_t> &remove) {
     std::vector<uint64_t> result;
