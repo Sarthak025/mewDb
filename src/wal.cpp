@@ -110,6 +110,8 @@ bool read_string(std::FILE *file, std::string &value, uint32_t length, FileOffse
 	return read_bytes(file, value.data(), length);
 }
 
+enum class StopReason { torn_tail, corrupt_record };
+
 } // namespace
 
 struct WalData {
@@ -212,17 +214,30 @@ void Wal::recover(DbEngine& db){
 	WalData record{};
 	uint32_t checksum = 0;
 
+	StopReason stop_reason = StopReason::torn_tail;
+
 	while(true){
-		if (!read_bytes(file, &record.magic_number, sizeof(record.magic_number)) ||
-			record.magic_number != WAL_MAGIC_NUMBER) {
+		if (!read_bytes(file, &record.magic_number, sizeof(record.magic_number))) {
+			break;
+		}
+		if (record.magic_number != WAL_MAGIC_NUMBER) {
+			stop_reason = StopReason::corrupt_record;
 			break;
 		}
 
-		if (!read_bytes(file, &record.version_number, sizeof(record.version_number)) ||
-			!read_bytes(file, &record.index, sizeof(record.index)) ||
-			!read_bytes(file, &record.operation, sizeof(record.operation)) ||
-			record.version_number != WAL_VERSION ||
-			(record.operation != Operation::set && record.operation != Operation::del)) {
+		if (!read_bytes(file, &record.version_number, sizeof(record.version_number))) {
+			break;
+		}
+		if (record.version_number != WAL_VERSION) {
+			stop_reason = StopReason::corrupt_record;
+			break;
+		}
+		if (!read_bytes(file, &record.index, sizeof(record.index)) ||
+			!read_bytes(file, &record.operation, sizeof(record.operation))) {
+			break;
+		}
+		if (record.operation != Operation::set && record.operation != Operation::del) {
+			stop_reason = StopReason::corrupt_record;
 			break;
 		}
 
@@ -248,7 +263,7 @@ void Wal::recover(DbEngine& db){
 		}
 		uint32_t new_checksum = calc_checksum(record);
 		if(new_checksum != checksum){
-			std::cout << "Recovery stopped" << '\n';
+			stop_reason = StopReason::corrupt_record;
 			break;
 		}
 
@@ -283,6 +298,13 @@ void Wal::recover(DbEngine& db){
 		if (!sync_file(file)) {
 			throw std::system_error(errno, std::generic_category(), "Cannot sync repaired WAL");
 		}
+
+		const std::string description = stop_reason == StopReason::torn_tail
+			? "torn tail (expected after a crash)"
+			: "corrupt record (possible data loss)";
+
+		std::cerr << "WAL recovery: discarded " << (file_size - last_valid_end)
+			<< " bytes at offset " << last_valid_end << ": " << description << '\n';
 	}
 	write_failed = false;
 }

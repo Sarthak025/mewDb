@@ -76,3 +76,6 @@ Testing/
 
 data/*
 !data/.gitkeep
+
+# local test suite 
+tests/
