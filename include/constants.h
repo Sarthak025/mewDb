@@ -14,7 +14,7 @@ enum class Operation : uint8_t{
 };
 
 // WAL CONSTANTS
-constexpr uint8_t WAL_VERSION = 1;
+constexpr uint8_t WAL_VERSION = 2;
 constexpr uint32_t WAL_MAGIC_NUMBER = 0xDEADBEEF;
 inline const std::string WAL_FILE_NAME = "data/wal.bin";
 

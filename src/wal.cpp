@@ -120,20 +120,25 @@ struct WalData {
 	uint64_t index;
 	Operation operation;
 	uint32_t key_len;
-	std::string key;
 	uint32_t val_len;
+	std::string key;
 	std::string val;
 };
 
-uint32_t calc_checksum(const WalData &record) {
+uint32_t calc_header_checksum(const WalData &record) {
 	uint32_t crc = crc32(0L, Z_NULL, 0);
 
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&record.version_number), sizeof(record.version_number));
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&record.index), sizeof(record.index));
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&record.operation), sizeof(record.operation));
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&record.key_len), sizeof(record.key_len));
-	crc = crc32(crc, reinterpret_cast<const Bytef *>(record.key.c_str()), record.key_len);
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&record.val_len), sizeof(record.val_len));
+
+	return crc;
+}
+
+uint32_t calc_record_checksum(const WalData &record, uint32_t header_checksum) {
+	uint32_t crc = crc32(header_checksum, reinterpret_cast<const Bytef *>(record.key.c_str()), record.key_len);
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(record.val.c_str()), record.val_len);
 
 	return crc;
@@ -168,12 +173,13 @@ bool Wal::write(Operation operation, const std::string &key, const std::string &
         index,
         operation,
         key_len,
-        key, 
         val_len,
+        key,
         val
     };
 
-	uint32_t crc = calc_checksum(record);
+	uint32_t header_crc = calc_header_checksum(record);
+	uint32_t record_crc = calc_record_checksum(record, header_crc);
 
 	std::FILE *file = wal_log_file.get();
 	if (!write_bytes(file, &magic_number, sizeof(magic_number)) ||
@@ -181,10 +187,11 @@ bool Wal::write(Operation operation, const std::string &key, const std::string &
 		!write_bytes(file, &index, sizeof(index)) ||
 		!write_bytes(file, &operation, sizeof(operation)) ||
 		!write_bytes(file, &key_len, sizeof(key_len)) ||
-		!write_bytes(file, key.data(), key_len) ||
 		!write_bytes(file, &val_len, sizeof(val_len)) ||
+		!write_bytes(file, &header_crc, sizeof(header_crc)) ||
+		!write_bytes(file, key.data(), key_len) ||
 		!write_bytes(file, val.data(), val_len) ||
-		!write_bytes(file, &crc, sizeof(crc)) ||
+		!write_bytes(file, &record_crc, sizeof(record_crc)) ||
 		!sync_file(file)) {
 		
 		write_failed = true;
@@ -212,7 +219,8 @@ void Wal::recover(DbEngine& db){
 	FileOffset last_valid_end = 0;
 
 	WalData record{};
-	uint32_t checksum = 0;
+	uint32_t header_checksum = 0;
+	uint32_t record_checksum = 0;
 
 	StopReason stop_reason = StopReason::torn_tail;
 
@@ -241,28 +249,29 @@ void Wal::recover(DbEngine& db){
 			break;
 		}
 
-		//Read key
-		if (!read_bytes(file, &record.key_len, sizeof(record.key_len))) {
+		//Read lengths and header checksum
+		if (!read_bytes(file, &record.key_len, sizeof(record.key_len)) ||
+			!read_bytes(file, &record.val_len, sizeof(record.val_len)) ||
+			!read_bytes(file, &header_checksum, sizeof(header_checksum))) {
 			break;
 		}
-		if (!read_string(file, record.key, record.key_len, file_size)) {
-			break;
-		}
-		
-		//Read Value
-		if (!read_bytes(file, &record.val_len, sizeof(record.val_len))) {
-			break;
-		}
-		if (!read_string(file, record.val, record.val_len, file_size)) {
+		// Once lengths are validated, missing bytes indicate a torn write.
+		if (calc_header_checksum(record) != header_checksum) {
+			stop_reason = StopReason::corrupt_record;
 			break;
 		}
 
-		//Read the checksum
-		if (!read_bytes(file, &checksum, sizeof(checksum))) {
+		//Read key and value
+		if (!read_string(file, record.key, record.key_len, file_size) ||
+			!read_string(file, record.val, record.val_len, file_size)) {
 			break;
 		}
-		uint32_t new_checksum = calc_checksum(record);
-		if(new_checksum != checksum){
+
+		//Read the record checksum
+		if (!read_bytes(file, &record_checksum, sizeof(record_checksum))) {
+			break;
+		}
+		if (calc_record_checksum(record, header_checksum) != record_checksum) {
 			stop_reason = StopReason::corrupt_record;
 			break;
 		}
