@@ -4,6 +4,7 @@
 #include "constants.h"
 #include "manifest.h"
 #include <iostream>
+#include <stdexcept>
 
 
 DbEngine::DbEngine(){
@@ -34,15 +35,16 @@ void DbEngine::recover_del(const std::string &key){
 }
 
 void DbEngine::set(const std::string &key, const std::string &val){
-    if(wal_instance->write(Operation::set, key, val)){
-
-        if(this->exists_in_curr_mem_table(key)){
-            mem_table_size -= key.length() + (curr_mem_table[key].value()).length();
-        }
-
-        mem_table_size += key.length() + val.length();
-        curr_mem_table[key] = val;
+    if (!wal_instance->write(Operation::set, key, val)) {
+        throw std::runtime_error("Error writing or syncing WAL...");
     }
+
+    if(this->exists_in_curr_mem_table(key)){
+        mem_table_size -= key.length() + (curr_mem_table[key].value()).length();
+    }
+
+    mem_table_size += key.length() + val.length();
+    curr_mem_table[key] = val;
 
     if(mem_table_size >= MEM_TABLE_SIZE_LIMIT){
         if(!(this->flush())){

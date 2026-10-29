@@ -1,11 +1,116 @@
 #include "db_engine.h"
 #include "wal.h"
 #include "constants.h"
+#include <cerrno>
 #include <cstdint>
-#include <fstream>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <zlib.h>
+
+#if defined(_WIN32)
+#include <io.h>
+#elif defined(__APPLE__)
+#include <fcntl.h>
+#include <unistd.h>
+#elif defined(__unix__)
+#include <unistd.h>
+#else
+#error "WAL syncing is not implemented for this platform"
+#endif
+
+namespace {
+
+bool sync_file(std::FILE *file) {
+	if (std::ferror(file) || std::fflush(file) != 0) {
+		return false;
+	}
+
+#if defined(_WIN32)
+	const int fd = ::_fileno(file);
+	return fd != -1 && ::_commit(fd) == 0;
+#else
+	const int fd = ::fileno(file);
+	if (fd == -1) {
+		return false;
+	}
+
+	int result;
+	do {
+#if defined(__APPLE__)
+		result = ::fcntl(fd, F_FULLFSYNC);
+#else
+		result = ::fsync(fd);
+#endif
+	} while (result == -1 && errno == EINTR);
+	return result == 0;
+#endif
+}
+
+bool write_bytes(std::FILE *file, const void *data, std::size_t size) {
+	return size == 0 || std::fwrite(data, 1, size, file) == size;
+}
+
+bool read_bytes(std::FILE *file, void *data, std::size_t size) {
+	return size == 0 || std::fread(data, 1, size, file) == size;
+}
+
+#if defined(_WIN32)
+using FileOffset = std::int64_t;
+#else
+using FileOffset = off_t;
+#endif
+
+bool seek_file(std::FILE *file, FileOffset offset, int origin) {
+#if defined(_WIN32)
+	return ::_fseeki64(file, offset, origin) == 0;
+#else
+	return ::fseeko(file, offset, origin) == 0;
+#endif
+}
+
+FileOffset file_position(std::FILE *file) {
+#if defined(_WIN32)
+	const FileOffset position = ::_ftelli64(file);
+#else
+	const FileOffset position = ::ftello(file);
+#endif
+	if (position == -1) {
+		throw std::system_error(errno, std::generic_category(), "Cannot determine WAL position");
+	}
+	return position;
+}
+
+bool truncate_file(std::FILE *file, FileOffset length) {
+#if defined(_WIN32)
+	const int fd = ::_fileno(file);
+	return fd != -1 && ::_chsize_s(fd, length) == 0;
+#else
+	const int fd = ::fileno(file);
+	if (fd == -1) {
+		return false;
+	}
+	int result;
+	do {
+		result = ::ftruncate(fd, length);
+	} while (result == -1 && errno == EINTR);
+	return result == 0;
+#endif
+}
+
+bool read_string(std::FILE *file, std::string &value, uint32_t length, FileOffset file_size) {
+	const FileOffset position = file_position(file);
+	// A corrupt length must not allocate more memory than the file can contain.
+	if (position > file_size || length > static_cast<std::uint64_t>(file_size - position)) {
+		return false;
+	}
+	value.resize(length);
+	return read_bytes(file, value.data(), length);
+}
+
+} // namespace
 
 struct WalData {
 	uint32_t magic_number;
@@ -32,26 +137,28 @@ uint32_t calc_checksum(const WalData &record) {
 	return crc;
 }
 
-Wal::Wal(){
-	wal_filename = WAL_FILE_NAME;
-	{ std::ofstream create(wal_filename, std::ios::binary | std::ios::app); }
-    wal_log_file.open(wal_filename, std::ios::binary | std::ios::in | std::ios::app);
-    index = 0;
-}
-
-Wal::~Wal(){
-    wal_log_file.close();
+Wal::Wal() : wal_filename(WAL_FILE_NAME) {
+	wal_log_file.reset(std::fopen(wal_filename.c_str(), "a+b"));
+	if (!wal_log_file) {
+		throw std::system_error(errno, std::generic_category(), "Cannot open WAL");
+	}
 }
 
 bool Wal::write(Operation operation, const std::string &key, const std::string &val){
     if(operation != Operation::set && operation!= Operation::del) {
-        return false;
+		return false;
     }
+
+	if (!wal_log_file || write_failed ||
+		key.size() > std::numeric_limits<uint32_t>::max() ||
+		val.size() > std::numeric_limits<uint32_t>::max()) {
+		return false;
+	}
     
     uint32_t magic_number = WAL_MAGIC_NUMBER;
 	uint8_t version_number = WAL_VERSION;
-	uint32_t key_len = key.length();
-	uint32_t val_len = val.length();
+	uint32_t key_len = static_cast<uint32_t>(key.size());
+	uint32_t val_len = static_cast<uint32_t>(val.size());
 
     WalData record = {
         magic_number,
@@ -66,61 +173,87 @@ bool Wal::write(Operation operation, const std::string &key, const std::string &
 
 	uint32_t crc = calc_checksum(record);
 
-	wal_log_file.write(reinterpret_cast<char *>(&magic_number), sizeof(magic_number));
-	wal_log_file.write(reinterpret_cast<char *>(&version_number), sizeof(version_number));
-	wal_log_file.write(reinterpret_cast<char *>(&index), sizeof(index));
-	wal_log_file.write(reinterpret_cast<char *>(&operation), sizeof(operation));
-	wal_log_file.write(reinterpret_cast<char *>(&key_len), sizeof(key_len));
-	wal_log_file.write(key.c_str(), key_len);
-	wal_log_file.write(reinterpret_cast<char *>(&val_len), sizeof(val_len));
-	wal_log_file.write(val.c_str(), val_len);
-	wal_log_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
-
-
-    if(wal_log_file.good()){
-		index++;
-		return true;
-	}
-	else{
+	std::FILE *file = wal_log_file.get();
+	if (!write_bytes(file, &magic_number, sizeof(magic_number)) ||
+		!write_bytes(file, &version_number, sizeof(version_number)) ||
+		!write_bytes(file, &index, sizeof(index)) ||
+		!write_bytes(file, &operation, sizeof(operation)) ||
+		!write_bytes(file, &key_len, sizeof(key_len)) ||
+		!write_bytes(file, key.data(), key_len) ||
+		!write_bytes(file, &val_len, sizeof(val_len)) ||
+		!write_bytes(file, val.data(), val_len) ||
+		!write_bytes(file, &crc, sizeof(crc)) ||
+		!sync_file(file)) {
+		
+		write_failed = true;
 		return false;
 	}
+	index++;
+	return true;
 }
 
 void Wal::recover(DbEngine& db){
 
-    wal_log_file.seekg(0, std::ios::beg);
+	if (!wal_log_file || write_failed) {
+		throw std::runtime_error("Cannot recover an unavailable or failed WAL");
+	}
 
-	WalData record;
-	uint32_t checksum;
+	write_failed = true;
+	std::FILE *file = wal_log_file.get();
+	if (!seek_file(file, 0, SEEK_END)) {
+		throw std::runtime_error("Cannot seek WAL to determine its size");
+	}
+	const FileOffset file_size = file_position(file);
+	if (!seek_file(file, 0, SEEK_SET)) {
+		throw std::runtime_error("Cannot seek WAL for recovery");
+	}
+	FileOffset last_valid_end = 0;
+
+	WalData record{};
+	uint32_t checksum = 0;
 
 	while(true){
-		wal_log_file.read(reinterpret_cast<char*>(&record.magic_number), sizeof(record.magic_number));
-		if(!wal_log_file || record.magic_number != WAL_MAGIC_NUMBER){
+		if (!read_bytes(file, &record.magic_number, sizeof(record.magic_number)) ||
+			record.magic_number != WAL_MAGIC_NUMBER) {
 			break;
 		}
 
-		wal_log_file.read(reinterpret_cast<char*>(&record.version_number), sizeof(record.version_number));
-		wal_log_file.read(reinterpret_cast<char*>(&record.index), sizeof(record.index));
-		wal_log_file.read(reinterpret_cast<char*>(&record.operation), sizeof(record.operation));
+		if (!read_bytes(file, &record.version_number, sizeof(record.version_number)) ||
+			!read_bytes(file, &record.index, sizeof(record.index)) ||
+			!read_bytes(file, &record.operation, sizeof(record.operation)) ||
+			record.version_number != WAL_VERSION ||
+			(record.operation != Operation::set && record.operation != Operation::del)) {
+			break;
+		}
 
 		//Read key
-		wal_log_file.read(reinterpret_cast<char*>(&record.key_len), sizeof(record.key_len));
-		record.key.resize(record.key_len);
-		wal_log_file.read(reinterpret_cast<char*>(record.key.data()), record.key_len);
+		if (!read_bytes(file, &record.key_len, sizeof(record.key_len))) {
+			break;
+		}
+		if (!read_string(file, record.key, record.key_len, file_size)) {
+			break;
+		}
 		
 		//Read Value
-		wal_log_file.read(reinterpret_cast<char*>(&record.val_len), sizeof(record.val_len));
-		record.val.resize(record.val_len);
-		wal_log_file.read(reinterpret_cast<char*>(record.val.data()), record.val_len);
+		if (!read_bytes(file, &record.val_len, sizeof(record.val_len))) {
+			break;
+		}
+		if (!read_string(file, record.val, record.val_len, file_size)) {
+			break;
+		}
 
 		//Read the checksum
-		wal_log_file.read(reinterpret_cast<char*>(&checksum), sizeof(checksum));
+		if (!read_bytes(file, &checksum, sizeof(checksum))) {
+			break;
+		}
 		uint32_t new_checksum = calc_checksum(record);
 		if(new_checksum != checksum){
 			std::cout << "Recovery stopped" << '\n';
 			break;
 		}
 
+		// Only a complete record with a matching checksum extends the valid prefix.
+		last_valid_end = file_position(file);
 
 		if(record.operation == Operation::set){
 			db.recover_set(record.key, record.val);
@@ -128,21 +261,47 @@ void Wal::recover(DbEngine& db){
 		else if(record.operation == Operation::del) {
 			db.recover_del(record.key);
 		}
-        index = record.index;
+        index = record.index + 1;
 	}
 
-	wal_log_file.clear();
+	if (std::ferror(file)) {
+		throw std::runtime_error("Cannot read WAL during recovery");
+	}
+	std::clearerr(file);
+
+	// Leave input mode before changing the file through its descriptor.
+	if (!seek_file(file, 0, SEEK_END)) {
+		throw std::runtime_error("Cannot seek WAL for appending");
+	}
+	if (last_valid_end < file_size) {
+		if (!truncate_file(file, last_valid_end)) {
+			throw std::system_error(errno, std::generic_category(), "Cannot truncate invalid WAL tail");
+		}
+		if (!seek_file(file, last_valid_end, SEEK_SET)) {
+			throw std::runtime_error("Cannot seek WAL after tail repair");
+		}
+		if (!sync_file(file)) {
+			throw std::system_error(errno, std::generic_category(), "Cannot sync repaired WAL");
+		}
+	}
+	write_failed = false;
 }
 
 bool Wal::truncate() {
-	wal_log_file.close();
-	{
-        std::ofstream truncate_file(wal_filename, std::ios::binary | std::ios::trunc);
-        if (!truncate_file) {
-            return false;
-        }
-    }
-    wal_log_file.open(wal_filename, std::ios::binary | std::ios::in | std::ios::app);
-
-	return wal_log_file.good();
+	write_failed = true;
+	std::FILE *file = wal_log_file.release();
+	if (file && std::fclose(file) != 0) {
+		return false;
+	}
+	wal_log_file.reset(std::fopen(wal_filename.c_str(), "w+b"));
+	if (!wal_log_file || !sync_file(wal_log_file.get())) {
+		return false;
+	}
+	file = wal_log_file.release();
+	if (std::fclose(file) != 0) {
+		return false;
+	}
+	wal_log_file.reset(std::fopen(wal_filename.c_str(), "a+b"));
+	write_failed = !wal_log_file;
+	return !write_failed;
 }
