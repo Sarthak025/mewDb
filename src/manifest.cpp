@@ -1,12 +1,15 @@
 #include "manifest.h"
 #include "constants.h"
+#include "file_io.h"
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 #include <string>
 #include <fstream>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
+#include <system_error>
 
 std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const std::vector<uint64_t> &remove) {
     std::vector<uint64_t> result;
@@ -67,18 +70,9 @@ Manifest::Manifest(){
     }
     else{
         //create a fresh manifest file
-
-        next_ss_table_index = 0;
-        num_ss_tables = 0;
-
-        manifest_file.open(manifest_file_name, std::ios::out);
-        manifest_file << MANIFEST_MAGIC_CONST << std::endl;
-        manifest_file << MANIFEST_VERSION << std::endl;
-        manifest_file << next_ss_table_index << std::endl;
-        manifest_file << num_ss_tables << std::endl;
-
-        manifest_file.close();
-        manifest_file.open(manifest_file_name, std::ios::in);
+        if (!write_manifest(0, {})) {
+            throw std::runtime_error("Failed to create manifest file...");
+        }
     }
 }
 
@@ -124,34 +118,9 @@ uint64_t Manifest::get_next_ss_table_index(){
 bool Manifest::add_new_ss_table_index(uint64_t idx){
 
     std::vector<uint64_t> available_indices = this->get_ss_table_indices();
-
-    next_ss_table_index = idx + 1;
-    num_ss_tables += 1;
-
-    //create a temp manifest file
-    std::fstream temp_manifest(MANIFEST_TEMP_FILE_NAME, std::ios::out);
-    temp_manifest << MANIFEST_MAGIC_CONST << std::endl;
-    temp_manifest << MANIFEST_VERSION << std::endl;
-    temp_manifest << next_ss_table_index << std::endl;
-    temp_manifest << num_ss_tables << std::endl;
-
     available_indices.push_back(idx);
 
-    for(auto i : available_indices){
-        temp_manifest << i << std::endl;
-    }
-    temp_manifest.flush();
-
-    if (!temp_manifest) {
-        return false;
-    }
-
-    //rename to old mainfest file
-    manifest_file.close();
-    std::filesystem::rename(MANIFEST_TEMP_FILE_NAME, manifest_file_name);
-    manifest_file.open(manifest_file_name, std::ios::in);
-    
-    return manifest_file.good();
+    return write_manifest(idx + 1, available_indices);
 }
 
 
@@ -161,28 +130,40 @@ bool Manifest::replace_ss_table_indices(const std::vector<uint64_t> &old_indices
 
     final_indices.push_back(new_index);
 
-    this->num_ss_tables = final_indices.size();
-    this->next_ss_table_index = new_index + 1;
+    return write_manifest(new_index + 1, final_indices);
+}
 
-    std::fstream temp_manifest_file(MANIFEST_TEMP_FILE_NAME, std::ios::out);
-    temp_manifest_file << MANIFEST_MAGIC_CONST << std::endl;
-    temp_manifest_file << MANIFEST_VERSION << std::endl;
-    temp_manifest_file << next_ss_table_index << std::endl;
-    temp_manifest_file << num_ss_tables << std::endl;
 
-    for(auto i : final_indices){
-        temp_manifest_file << i << std::endl;
+bool Manifest::write_manifest(uint64_t next_index, const std::vector<uint64_t> &indices){
+    std::string contents = MANIFEST_MAGIC_CONST + "\n"
+        + std::to_string(MANIFEST_VERSION) + "\n"
+        + std::to_string(next_index) + "\n"
+        + std::to_string(indices.size()) + "\n";
+    for(auto i : indices){
+        contents += std::to_string(i) + "\n";
     }
 
-    temp_manifest_file.flush();
-    if (!temp_manifest_file) {
+    // Syncing temp file before rename else rename can reach disk before contents
+    std::FILE *temp_manifest = std::fopen(MANIFEST_TEMP_FILE_NAME.c_str(), "wb");
+    if (!temp_manifest) {
         return false;
     }
-    
-    //rename to temp mainfest file to original
+    bool written = write_bytes(temp_manifest, contents.data(), contents.size()) && sync_file(temp_manifest);
+    if (std::fclose(temp_manifest) != 0 || !written) {
+        return false;
+    }
+
+    //rename temp manifest file to original
     manifest_file.close();
-    std::filesystem::rename(MANIFEST_TEMP_FILE_NAME, MANIFEST_FILE_NAME);
-    manifest_file.open(MANIFEST_FILE_NAME, std::ios::in);
-    
-    return manifest_file.good();
+    std::error_code rename_error;
+    std::filesystem::rename(MANIFEST_TEMP_FILE_NAME, manifest_file_name, rename_error);
+    manifest_file.open(manifest_file_name, std::ios::in);
+    if (rename_error) {
+        return false;
+    }
+
+    next_ss_table_index = next_index;
+    num_ss_tables = indices.size();
+
+    return sync_parent_directory(manifest_file_name) && manifest_file.good();
 }

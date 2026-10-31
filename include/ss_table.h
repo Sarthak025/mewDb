@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <map>
 #include <optional>
@@ -94,8 +96,10 @@ struct SsTableData {
 class SsTable {
 private:
 	uint64_t ss_table_index;
-	std::fstream ss_table_file;
-    
+	std::string ss_table_file_name;
+	std::fstream ss_table_file; // read mode
+	std::unique_ptr<std::FILE, decltype(&std::fclose)> ss_table_write_file{nullptr, &std::fclose}; // write mode: FILE* so it can be synced
+
     public:
 	SsTable(uint64_t table_index, OpenMode mode);
 	~SsTable();

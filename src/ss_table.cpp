@@ -3,8 +3,12 @@
 #include "ss_table.h"
 #include "constants.h"
 #include "manifest.h"
+#include "file_io.h"
 #include <algorithm>
+#include <cerrno>
+#include <cstdio>
 #include <stdexcept>
+#include <system_error>
 #include <string>
 #include <cstdint>
 #include <zlib.h>
@@ -81,7 +85,7 @@ uint32_t key_val_checksum(Operation op, uint32_t crc, const std::string &key, co
 	return crc;
 }
 
-void write_header_block(std::fstream &ss_table_file, uint64_t ss_table_index, std::uint64_t total_entry_cnt){
+bool write_header_block(std::FILE *ss_table_file, uint64_t ss_table_index, std::uint64_t total_entry_cnt){
     uint32_t magic_number = SS_TABLE_MAGIC_NUMBER;
     uint8_t version = SS_TABLE_VERSION;
     // ss_table_index
@@ -94,21 +98,22 @@ void write_header_block(std::fstream &ss_table_file, uint64_t ss_table_index, st
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(&total_entry_cnt), sizeof(total_entry_cnt));
 
     //start writing in header
-    ss_table_file.write(reinterpret_cast<char *>(&magic_number), sizeof(magic_number));
-	ss_table_file.write(reinterpret_cast<char *>(&version), sizeof(version));
-	ss_table_file.write(reinterpret_cast<char *>(&ss_table_index), sizeof(ss_table_index));
-	ss_table_file.write(reinterpret_cast<char *>(&total_entry_cnt), sizeof(total_entry_cnt));
-    ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
-
+    return write_bytes(ss_table_file, &magic_number, sizeof(magic_number)) &&
+        write_bytes(ss_table_file, &version, sizeof(version)) &&
+        write_bytes(ss_table_file, &ss_table_index, sizeof(ss_table_index)) &&
+        write_bytes(ss_table_file, &total_entry_cnt, sizeof(total_entry_cnt)) &&
+        write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
-void write_data_block(std::fstream &ss_table_file, std::vector<Record> &data){
+bool write_data_block(std::FILE *ss_table_file, std::vector<Record> &data){
     uint64_t entry_cnt = data.size();
-    
+
     //start calculating checksum
     uint32_t crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, reinterpret_cast<const Bytef *>(&entry_cnt), sizeof(entry_cnt));
-    ss_table_file.write(reinterpret_cast<char *>(&entry_cnt),sizeof(entry_cnt));
+    if (!write_bytes(ss_table_file, &entry_cnt, sizeof(entry_cnt))) {
+        return false;
+    }
 
     for(const auto &[key, val] : data){
         Operation op = (val.has_value()) ? Operation::set : Operation::del;
@@ -116,69 +121,77 @@ void write_data_block(std::fstream &ss_table_file, std::vector<Record> &data){
         uint32_t key_len = key.length();
 	    uint32_t val_len = (val.has_value()) ? val.value().length() : 0;
 
-        ss_table_file.write(reinterpret_cast<char *>(&op),sizeof(op));
-        ss_table_file.write(reinterpret_cast<char *>(&key_len), sizeof(key_len));
-        ss_table_file.write(key.c_str(), key_len);
-        ss_table_file.write(reinterpret_cast<char *>(&val_len), sizeof(val_len));
+        if (!write_bytes(ss_table_file, &op, sizeof(op)) ||
+            !write_bytes(ss_table_file, &key_len, sizeof(key_len)) ||
+            !write_bytes(ss_table_file, key.c_str(), key_len) ||
+            !write_bytes(ss_table_file, &val_len, sizeof(val_len))) {
+            return false;
+        }
 
         if (val.has_value()) {
-            ss_table_file.write((val.value()).c_str(), val_len);
+            if (!write_bytes(ss_table_file, (val.value()).c_str(), val_len)) {
+                return false;
+            }
             crc = key_val_checksum(op, crc, key, val.value());
         } else {
             crc = key_val_checksum(op, crc, key, "");
         }
     }
-    ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
-
+    return write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
-void write_bloom_filter_block(std::fstream &ss_table_file, uint64_t bit_array_size, uint32_t hash_func_cnt, const std::vector<uint8_t> &bloom_filter_bit_array){
+bool write_bloom_filter_block(std::FILE *ss_table_file, uint64_t bit_array_size, uint32_t hash_func_cnt, const std::vector<uint8_t> &bloom_filter_bit_array){
     uint32_t crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, reinterpret_cast<const Bytef *>(&bit_array_size), sizeof(bit_array_size));
-    ss_table_file.write(reinterpret_cast<char *>(&bit_array_size), sizeof(bit_array_size));
-
     crc = crc32(crc, reinterpret_cast<const Bytef *>(&hash_func_cnt), sizeof(hash_func_cnt));
-    ss_table_file.write(reinterpret_cast<char *>(&hash_func_cnt), sizeof(hash_func_cnt));
-    
+    if (!write_bytes(ss_table_file, &bit_array_size, sizeof(bit_array_size)) ||
+        !write_bytes(ss_table_file, &hash_func_cnt, sizeof(hash_func_cnt))) {
+        return false;
+    }
+
     for(uint8_t i : bloom_filter_bit_array){
         crc = crc32(crc, reinterpret_cast<const Bytef *>(&i), sizeof(i));
-        ss_table_file.write(reinterpret_cast<char *>(&i), sizeof(i));
+        if (!write_bytes(ss_table_file, &i, sizeof(i))) {
+            return false;
+        }
     }
-    
-    ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
 
+    return write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
-void write_sparse_index_block(std::fstream &ss_table_file, std::vector<std::pair<std::string, uint64_t>> &sparse_data){
+bool write_sparse_index_block(std::FILE *ss_table_file, std::vector<std::pair<std::string, uint64_t>> &sparse_data){
     uint32_t crc = crc32(0L, Z_NULL, 0);
 
     uint64_t num_data_blocks = sparse_data.size();
     crc = crc32(crc, reinterpret_cast<const Bytef *>(&num_data_blocks), sizeof(num_data_blocks));
-    ss_table_file.write(reinterpret_cast<char *>(&num_data_blocks), sizeof(num_data_blocks));
+    if (!write_bytes(ss_table_file, &num_data_blocks, sizeof(num_data_blocks))) {
+        return false;
+    }
 
     for(auto &[key, offset] : sparse_data){
         uint32_t key_len = key.length();
         crc = crc32(crc, reinterpret_cast<const Bytef *>(&key_len), sizeof(key_len));
 	    crc = crc32(crc, reinterpret_cast<const Bytef *>(key.c_str()), key_len);
-        ss_table_file.write(reinterpret_cast<char *>(&key_len), sizeof(key_len));
-        ss_table_file.write(key.c_str(), key_len);
-
         crc = crc32(crc, reinterpret_cast<const Bytef *>(&offset), sizeof(offset));
-        ss_table_file.write(reinterpret_cast<char *>(&offset), sizeof(offset));
+
+        if (!write_bytes(ss_table_file, &key_len, sizeof(key_len)) ||
+            !write_bytes(ss_table_file, key.c_str(), key_len) ||
+            !write_bytes(ss_table_file, &offset, sizeof(offset))) {
+            return false;
+        }
     }
-    ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
+    return write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
-void write_footer_block(std::fstream &ss_table_file, uint64_t bloom_filter_offset, uint64_t sparse_index_offset){
+bool write_footer_block(std::FILE *ss_table_file, uint64_t bloom_filter_offset, uint64_t sparse_index_offset){
     uint32_t crc = crc32(0L, Z_NULL, 0);
 
     crc = crc32(crc, reinterpret_cast<const Bytef *>(&bloom_filter_offset), sizeof(bloom_filter_offset));
-    ss_table_file.write(reinterpret_cast<char *>(&bloom_filter_offset), sizeof(bloom_filter_offset));
-
     crc = crc32(crc, reinterpret_cast<const Bytef *>(&sparse_index_offset), sizeof(sparse_index_offset));
-    ss_table_file.write(reinterpret_cast<char *>(&sparse_index_offset), sizeof(sparse_index_offset));
 
-    ss_table_file.write(reinterpret_cast<char *>(&crc), sizeof(crc));
+    return write_bytes(ss_table_file, &bloom_filter_offset, sizeof(bloom_filter_offset)) &&
+        write_bytes(ss_table_file, &sparse_index_offset, sizeof(sparse_index_offset)) &&
+        write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
 FooterData read_footer_block(std::fstream &ss_table_file) {
@@ -312,7 +325,7 @@ DataBlockData read_data_block_by_offset(std::fstream &ss_table_file, uint64_t of
 //______________________________________________________________________________________________________________________________________________________________________________________________________
 
 SsTable::SsTable(uint64_t table_index, OpenMode mode){
-    std::string ss_table_file_name = SS_TABLE_FILE_NAME + "_" + std::to_string(table_index) + ".bin";
+    ss_table_file_name = SS_TABLE_FILE_NAME + "_" + std::to_string(table_index) + ".bin";
     ss_table_index = table_index;
     if(mode == OpenMode::read){
         if(std::filesystem::is_regular_file(ss_table_file_name)){
@@ -323,8 +336,10 @@ SsTable::SsTable(uint64_t table_index, OpenMode mode){
         }
     }
     else if (mode == OpenMode::write){
-        { std::ofstream create(ss_table_file_name, std::ios::binary | std::ios::app); }
-        ss_table_file.open(ss_table_file_name, std::ios::binary | std::ios::out | std::ios::app);
+        ss_table_write_file.reset(std::fopen(ss_table_file_name.c_str(), "wb"));
+        if (!ss_table_write_file) {
+            throw std::system_error(errno, std::generic_category(), "Cannot create SSTable");
+        }
     }
 }
 
@@ -436,8 +451,15 @@ SsTableData SsTable::read_ss_table() {
 
 bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table){
 
+    std::FILE *file = ss_table_write_file.get();
+    if (!file) {
+        return false;
+    }
+
     // HEADER
-    write_header_block(this->ss_table_file, this->ss_table_index ,static_cast<uint64_t>(mem_table.size()));
+    if (!write_header_block(file, this->ss_table_index ,static_cast<uint64_t>(mem_table.size()))) {
+        return false;
+    }
 
     // BLOOM FILTER CALCS
     uint64_t total_entry_cnt = mem_table.size();
@@ -460,30 +482,40 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
         block.emplace_back(key, value);
 
         if (block.size() == RECORDS_PER_BLOCK) {
-            uint64_t block_offset = static_cast<uint64_t>(ss_table_file.tellp());
-            write_data_block(ss_table_file, block);
+            uint64_t block_offset = static_cast<uint64_t>(file_position(file));
+            if (!write_data_block(file, block)) {
+                return false;
+            }
             sparse_data.push_back({block[0].first, block_offset});
             block.clear();
         }
     }
     if (!block.empty()) {
-        uint64_t block_offset = static_cast<uint64_t>(ss_table_file.tellp());
-        write_data_block(ss_table_file, block);
+        uint64_t block_offset = static_cast<uint64_t>(file_position(file));
+        if (!write_data_block(file, block)) {
+            return false;
+        }
         sparse_data.push_back({block[0].first, block_offset});
     }
 
     // BLOOM FILTER
-    uint64_t bloom_filter_offset = static_cast<uint64_t>(ss_table_file.tellp());
-    write_bloom_filter_block(ss_table_file, bit_array_size, hash_func_cnt, bloom_filter_bit_array);
+    uint64_t bloom_filter_offset = static_cast<uint64_t>(file_position(file));
+    if (!write_bloom_filter_block(file, bit_array_size, hash_func_cnt, bloom_filter_bit_array)) {
+        return false;
+    }
 
     // SPARSE INDEX BLOCK
-    uint64_t sparse_index_offset = static_cast<uint64_t>(ss_table_file.tellp());
-    write_sparse_index_block(ss_table_file, sparse_data);
+    uint64_t sparse_index_offset = static_cast<uint64_t>(file_position(file));
+    if (!write_sparse_index_block(file, sparse_data)) {
+        return false;
+    }
 
     // FOOTER BLOCK
-    write_footer_block(ss_table_file, bloom_filter_offset, sparse_index_offset);
+    if (!write_footer_block(file, bloom_filter_offset, sparse_index_offset)) {
+        return false;
+    }
 
-    return ss_table_file.good();
+    return sync_file(file) && sync_parent_directory(ss_table_file_name);
 }
 
 

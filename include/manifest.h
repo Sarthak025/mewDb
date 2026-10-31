@@ -22,6 +22,7 @@ private:
     uint32_t manifest_version;
     uint64_t next_ss_table_index;
     uint64_t num_ss_tables;
+    bool write_manifest(uint64_t next_index, const std::vector<uint64_t> &indices);
 
 public:
     Manifest();

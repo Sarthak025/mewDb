@@ -1,6 +1,7 @@
 #include "db_engine.h"
 #include "wal.h"
 #include "constants.h"
+#include "file_io.h"
 #include <cerrno>
 #include <cstdint>
 #include <iostream>
@@ -12,56 +13,15 @@
 
 #if defined(_WIN32)
 #include <io.h>
-#elif defined(__APPLE__)
-#include <fcntl.h>
-#include <unistd.h>
-#elif defined(__unix__)
-#include <unistd.h>
 #else
-#error "WAL syncing is not implemented for this platform"
+#include <unistd.h>
 #endif
 
 namespace {
 
-bool sync_file(std::FILE *file) {
-	if (std::ferror(file) || std::fflush(file) != 0) {
-		return false;
-	}
-
-#if defined(_WIN32)
-	const int fd = ::_fileno(file);
-	return fd != -1 && ::_commit(fd) == 0;
-#else
-	const int fd = ::fileno(file);
-	if (fd == -1) {
-		return false;
-	}
-
-	int result;
-	do {
-#if defined(__APPLE__)
-		result = ::fcntl(fd, F_FULLFSYNC);
-#else
-		result = ::fsync(fd);
-#endif
-	} while (result == -1 && errno == EINTR);
-	return result == 0;
-#endif
-}
-
-bool write_bytes(std::FILE *file, const void *data, std::size_t size) {
-	return size == 0 || std::fwrite(data, 1, size, file) == size;
-}
-
 bool read_bytes(std::FILE *file, void *data, std::size_t size) {
 	return size == 0 || std::fread(data, 1, size, file) == size;
 }
-
-#if defined(_WIN32)
-using FileOffset = std::int64_t;
-#else
-using FileOffset = off_t;
-#endif
 
 bool seek_file(std::FILE *file, FileOffset offset, int origin) {
 #if defined(_WIN32)
@@ -69,18 +29,6 @@ bool seek_file(std::FILE *file, FileOffset offset, int origin) {
 #else
 	return ::fseeko(file, offset, origin) == 0;
 #endif
-}
-
-FileOffset file_position(std::FILE *file) {
-#if defined(_WIN32)
-	const FileOffset position = ::_ftelli64(file);
-#else
-	const FileOffset position = ::ftello(file);
-#endif
-	if (position == -1) {
-		throw std::system_error(errno, std::generic_category(), "Cannot determine WAL position");
-	}
-	return position;
 }
 
 bool truncate_file(std::FILE *file, FileOffset length) {
@@ -148,6 +96,10 @@ Wal::Wal() : wal_filename(WAL_FILE_NAME) {
 	wal_log_file.reset(std::fopen(wal_filename.c_str(), "a+b"));
 	if (!wal_log_file) {
 		throw std::system_error(errno, std::generic_category(), "Cannot open WAL");
+	}
+	// "a+b" may have just created wal.bin; that new name lives in data/, not in the file.
+	if (!sync_parent_directory(wal_filename)) {
+		throw std::system_error(errno, std::generic_category(), "Cannot sync WAL directory");
 	}
 }
 
