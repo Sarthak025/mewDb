@@ -86,50 +86,27 @@ std::optional<std::string> DbEngine::get(const std::string &key){
     return std::nullopt;
 }
 
-// Returns false if key has no live value in curr_mem_table or any SSTable. Otherwise logs the delete to the WAL, puts a tombstone in curr_mem_table
-// and returns true. Reads every SSTable in full to decide and never triggers a flush. Throws if the WAL write fails.
+// Returns false if key has no live value. Otherwise logs the delete to the WAL, puts a tombstone in curr_mem_table and returns true.
+// Throws if the WAL write fails.
 bool DbEngine::del(const std::string &key){
-    std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
+    std::optional<std::string> val = get(key);
+    if(val.has_value()){
+        if (!wal_instance->write(Operation::del, key, "")) {
+            throw std::runtime_error("Error in deleting key...");
+        }
 
-    std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
-    for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
-        auto i = *it;
-        SsTable curr_ss_table(i, OpenMode::read);
-        std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_keys_from_ss_table(key);
-        
-        // merge to temp map
-        for(const auto &[key, val] : ss_table_records){
-            if(temp_mem_table.find(key) == temp_mem_table.end()){
-                temp_mem_table[key] = val;
-            }
-        } 
+        if(curr_mem_table.find(key) != curr_mem_table.end()){
+            mem_table_size -= (curr_mem_table[key].value()).length();
+        }
+        else {
+            mem_table_size += key.length();
+        }
+        curr_mem_table[key] = std::nullopt;
+        return true;
     }
-
-    
-    auto it1 = curr_mem_table.find(key);
-    auto it2 = temp_mem_table.find(key);
-    
-    bool present_in_curr_mem_table = it1 != curr_mem_table.end() && it1->second.has_value();
-    bool present_in_temp_mem_table = it2 != temp_mem_table.end() && it2->second.has_value();
-    
-    if (!present_in_temp_mem_table) {
-        return false;
-    }
-
-    if (!wal_instance->write(Operation::del, key, "")) {
-        throw std::runtime_error("Error in deleting key...");
-    }
-
-    if (present_in_curr_mem_table) {
-        mem_table_size -= it1->second.value().length();
-    }
-    else{
-        mem_table_size += key.length();
-    }
-
-    curr_mem_table[key] = std::nullopt;
-    return true;
+    return false;
 }
+
 
 // True if key is in curr_mem_table with a live value (a tombstone counts as false). Ignores SSTables.
 bool DbEngine::exists_in_curr_mem_table(const std::string &key){

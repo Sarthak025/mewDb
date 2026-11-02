@@ -549,7 +549,7 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
 }
 
 
-// Point lookup: reads the footer and Bloom filter, and returns not_found if the filter rules the key out.
+// Point lookup: reads the footer and Bloom filter, and returns not_found if the bloom filter rules the key out.
 // Otherwise uses the sparse index to pick the one block that could hold the key, reads only that block,
 // and returns found (with the value), tombstone, or not_found. Throws on corruption.
 LookupResult SsTable::get_value_from_ss_table(const std::string &search_key){
