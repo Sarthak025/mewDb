@@ -19,6 +19,7 @@ private:
 	void recover_set(const std::string &key, const std::string &val);
 	void recover_del(const std::string &key);
 	bool exists_in_curr_mem_table(const std::string &key);
+	void check_mem_table_size_to_flush();
 	
 	public:
 	DbEngine();

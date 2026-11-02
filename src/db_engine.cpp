@@ -55,11 +55,7 @@ void DbEngine::set(const std::string &key, const std::string &val){
     mem_table_size += key.length() + val.length();
     curr_mem_table[key] = val;
 
-    if(mem_table_size >= MEM_TABLE_SIZE_LIMIT){
-        if(!(this->flush())){
-            throw std::runtime_error("Error in flushing to disk...");
-        }
-    }
+    check_mem_table_size_to_flush();
 }
 
 // Returns key's newest value: checks curr_mem_table first, then SSTables newest to oldest, stopping at the first place the key appears.
@@ -102,6 +98,7 @@ bool DbEngine::del(const std::string &key){
             mem_table_size += key.length();
         }
         curr_mem_table[key] = std::nullopt;
+        check_mem_table_size_to_flush();
         return true;
     }
     return false;
@@ -116,6 +113,16 @@ bool DbEngine::exists_in_curr_mem_table(const std::string &key){
         return it->second.has_value();
     }
     return false;
+}
+
+
+// Checks if the memtable size is over the limit, and triggers a flush
+void DbEngine::check_mem_table_size_to_flush(){
+    if(mem_table_size >= MEM_TABLE_SIZE_LIMIT){
+        if(!(this->flush())){
+            throw std::runtime_error("Error in flushing to disk...");
+        }
+    }
 }
 
 // Returns every live key in sorted order, merged from curr_mem_table and all SSTables (the newest entry for a key wins, tombstoned keys are left out).
@@ -250,6 +257,21 @@ bool DbEngine::compact(){
         } else {
             ++it;
         }
+    }
+
+    if(full_data.empty()){
+        if(!manifest_instance->remove_ss_table_indices(curr_ss_table_indices)){
+            return false;
+        }
+
+        // delete old tables
+        for(auto idx : curr_ss_table_indices){
+            std::string curr_ss_table_name = SS_TABLE_FILE_NAME + "_" + std::to_string(idx) + ".bin";
+            if(!std::filesystem::remove(curr_ss_table_name)){
+                return false;
+            }
+        }
+        return true;
     }
 
     uint64_t new_index = manifest_instance->get_next_ss_table_index();

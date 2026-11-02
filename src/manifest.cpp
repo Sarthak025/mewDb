@@ -132,6 +132,15 @@ bool Manifest::add_new_ss_table_index(uint64_t idx){
 }
 
 
+// Removes old_indices from the SSTable list
+bool Manifest::remove_ss_table_indices(const std::vector<uint64_t> &old_indices){
+    std::vector<uint64_t> curr_indices = this->get_ss_table_indices();
+    std::vector<uint64_t> final_indices = subtract_vectors(curr_indices, old_indices);
+
+    return write_manifest(next_ss_table_index, final_indices);
+}
+
+
 // Removes old_indices from the SSTable list, appends new_index as the newest entry, and durably
 // rewrites the manifest with next index new_index + 1. Used by compaction.
 bool Manifest::replace_ss_table_indices(const std::vector<uint64_t> &old_indices, uint64_t new_index){
