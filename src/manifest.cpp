@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <system_error>
 
+// Returns the values of curr that are not in remove. Both vectors must be sorted in ascending order.
 std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const std::vector<uint64_t> &remove) {
     std::vector<uint64_t> result;
 
@@ -40,6 +41,8 @@ std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const 
     return result;
 }
 
+// If the manifest file exists, opens it for reading and loads its magic, version, next index and SSTable
+// count (throws on a wrong magic). Otherwise creates an empty manifest with next index 0.
 Manifest::Manifest(){
     manifest_file_name = MANIFEST_FILE_NAME;
 
@@ -77,9 +80,12 @@ Manifest::Manifest(){
 }
 
 
+// Manifest_file closes itself.
 Manifest::~Manifest(){}
 
 
+// Re-reads the manifest file and returns its SSTable indices in file order (oldest first).
+// Throws if the 4 header lines are missing.
 std::vector<uint64_t> Manifest::get_ss_table_indices(){
     manifest_file.clear();
     manifest_file.seekg(0, std::ios::beg);
@@ -110,11 +116,13 @@ std::vector<uint64_t> Manifest::get_ss_table_indices(){
 }
 
 
+// Returns the index the next new SSTable should use (cached in memory, not re-read from the file).
 uint64_t Manifest::get_next_ss_table_index(){
     return next_ss_table_index;
 }
 
 
+// Appends idx to the SSTable list and durably rewrites the manifest with next index idx + 1.
 bool Manifest::add_new_ss_table_index(uint64_t idx){
 
     std::vector<uint64_t> available_indices = this->get_ss_table_indices();
@@ -124,6 +132,8 @@ bool Manifest::add_new_ss_table_index(uint64_t idx){
 }
 
 
+// Removes old_indices from the SSTable list, appends new_index as the newest entry, and durably
+// rewrites the manifest with next index new_index + 1. Used by compaction.
 bool Manifest::replace_ss_table_indices(const std::vector<uint64_t> &old_indices, uint64_t new_index){
     std::vector<uint64_t> curr_indices = this->get_ss_table_indices();
     std::vector<uint64_t> final_indices = subtract_vectors(curr_indices, old_indices);
@@ -134,6 +144,9 @@ bool Manifest::replace_ss_table_indices(const std::vector<uint64_t> &old_indices
 }
 
 
+// Durably replaces the manifest: writes the full contents to the temp file and syncs it, renames it over
+// the manifest, reopens the manifest for reading, updates the in-memory counters, then syncs the directory.
+// Returns false at the first step that fails; the counters change only once the rename has succeeded.
 bool Manifest::write_manifest(uint64_t next_index, const std::vector<uint64_t> &indices){
     std::string contents = MANIFEST_MAGIC_CONST + "\n"
         + std::to_string(MANIFEST_VERSION) + "\n"

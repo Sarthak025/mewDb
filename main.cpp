@@ -7,12 +7,14 @@
 #include "db_engine.h"
 #include "constants.h"
 
+// Returns a copy of s with every character converted to upper case.
 std::string toUpperString(std::string s) {
 	std::transform(s.begin(), s.end(), s.begin(),
 				   [](unsigned char c) { return std::toupper(c); });
 	return s;
 }
 
+// Returns true if exactly numOfargumentsNeeded arguments were given; otherwise prints an ERROR line and returns false.
 bool checkForArguments(const int numOfAvailableArguments, const int numOfargumentsNeeded){
 	if(numOfargumentsNeeded != numOfAvailableArguments){
 		std::cout << "ERROR: Not exact arguments, Required " << numOfargumentsNeeded << " Arguments" << std::endl;
@@ -22,6 +24,7 @@ bool checkForArguments(const int numOfAvailableArguments, const int numOfargumen
 	return true;
 }
 
+// Returns a copy of s with leading and trailing whitespace removed.
 std::string trim(std::string s) {
     s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
         return !std::isspace(ch);

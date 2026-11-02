@@ -7,17 +7,22 @@
 #include <stdexcept>
 
 
+// Opens the WAL and replays it into curr_mem_table, then loads (or creates) the manifest.
+// Throws if either file can't be opened or the WAL can't be recovered.
 DbEngine::DbEngine(){
     wal_instance = new Wal();
     wal_instance->recover(*this);
     manifest_instance = new Manifest();
 }
 
+// Frees the WAL and manifest, closing their files. Does not flush: unflushed writes stay in the WAL.
 DbEngine::~DbEngine(){
     delete wal_instance;
     delete manifest_instance;
 }
 
+// WAL replay version of set(): puts key=val into curr_mem_table and updates mem_table_size.
+// Writes nothing to the WAL and never flushes.
 void DbEngine::recover_set(const std::string &key, const std::string &val){
     if(this->exists_in_curr_mem_table(key)){
         mem_table_size -= key.length() + (curr_mem_table[key].value()).length();
@@ -27,6 +32,8 @@ void DbEngine::recover_set(const std::string &key, const std::string &val){
     curr_mem_table[key] = val;
 }
 
+// WAL replay version of del(): puts a tombstone for key into curr_mem_table.
+// Writes nothing to the WAL and doesn't check whether the key exists.
 void DbEngine::recover_del(const std::string &key){
     if(this->exists_in_curr_mem_table(key)){
         mem_table_size -= key.length() + (curr_mem_table[key].value()).length();
@@ -34,6 +41,8 @@ void DbEngine::recover_del(const std::string &key){
     curr_mem_table[key] = std::nullopt;
 }
 
+// Logs the write to the WAL, puts key=val into curr_mem_table. Flushes the MemTable to a new SSTable once mem_table_size reaches MEM_TABLE_SIZE_LIMIT.
+// Throws if the WAL write or the flush fails.
 void DbEngine::set(const std::string &key, const std::string &val){
     if (!wal_instance->write(Operation::set, key, val)) {
         throw std::runtime_error("Error writing or syncing WAL...");
@@ -53,6 +62,8 @@ void DbEngine::set(const std::string &key, const std::string &val){
     }
 }
 
+// Returns key's newest value: checks curr_mem_table first, then SSTables newest to oldest, stopping at the first place the key appears.
+// nullopt if the key is never found or its newest entry is a tombstone.
 std::optional<std::string> DbEngine::get(const std::string &key){
 
     // Check in curr_mem_table
@@ -75,6 +86,8 @@ std::optional<std::string> DbEngine::get(const std::string &key){
     return std::nullopt;
 }
 
+// Returns false if key has no live value in curr_mem_table or any SSTable. Otherwise logs the delete to the WAL, puts a tombstone in curr_mem_table
+// and returns true. Reads every SSTable in full to decide and never triggers a flush. Throws if the WAL write fails.
 bool DbEngine::del(const std::string &key){
     std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
 
@@ -118,6 +131,7 @@ bool DbEngine::del(const std::string &key){
     return true;
 }
 
+// True if key is in curr_mem_table with a live value (a tombstone counts as false). Ignores SSTables.
 bool DbEngine::exists_in_curr_mem_table(const std::string &key){
     auto it = curr_mem_table.find(key);
 
@@ -127,6 +141,8 @@ bool DbEngine::exists_in_curr_mem_table(const std::string &key){
     return false;
 }
 
+// Returns every live key in sorted order, merged from curr_mem_table and all SSTables (the newest entry for a key wins, tombstoned keys are left out).
+// Reads every SSTable in full.
 std::vector<std::string> DbEngine::keys(){
 
     // make copy of current mem_table
@@ -155,10 +171,13 @@ std::vector<std::string> DbEngine::keys(){
     return full_data;
 }
 
+// True if get() finds a live value for key.
 bool DbEngine::exists(const std::string &key){
     return (this->get(key)).has_value();
 }
 
+// Returns the live key/value pairs with start <= key <= end (both ends inclusive) in sorted order, merged
+// from curr_mem_table and all SSTables (newest entry wins). Swaps start and end if given in reverse.
 std::vector<std::pair<std::string, std::optional<std::string>>> DbEngine::range(const std::string &start, const std::string &end){
 
     if(start > end){
@@ -193,6 +212,8 @@ std::vector<std::pair<std::string, std::optional<std::string>>> DbEngine::range(
     return data;
 }
 
+// Returns the live key/value pairs whose key starts with prefix in sorted order, merged from
+// curr_mem_table and all SSTables (newest entry wins).
 std::vector<std::pair<std::string, std::optional<std::string>>> DbEngine::prefix_scan(const std::string &prefix){
     // make copy of current mem_table
     std::map<std::string, std::optional<std::string>> temp_mem_table = curr_mem_table;
@@ -223,6 +244,9 @@ std::vector<std::pair<std::string, std::optional<std::string>>> DbEngine::prefix
 }
 
 
+// Full compaction: merges every SSTable into one new SSTable (newest entry wins, all tombstones dropped), swaps it into the manifest,
+// then deletes the old files. Never touches the WAL or curr_mem_table. 
+// Does nothing and returns true with fewer than 2 SSTables. Returns false if any step fails.
 bool DbEngine::compact(){
     // merge old table
     std::map<std::string, std::optional<std::string>> full_data;
@@ -276,6 +300,8 @@ bool DbEngine::compact(){
 }
 
 
+// Writes curr_mem_table (tombstones included) to a new SSTable, records it in the manifest, truncates
+// the WAL, then empties curr_mem_table. Stops and returns false at the first step that fails.
 bool DbEngine::flush(){
     uint64_t ss_table_index = manifest_instance->get_next_ss_table_index();
     SsTable curr_ss_table(ss_table_index, OpenMode::write);

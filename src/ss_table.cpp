@@ -34,10 +34,13 @@ struct DataBlockData {
     std::vector<Entry> records;
 };
 
+// 64-bit XXH3 hash of key using the given seed.
 uint64_t xxhash(const std::string &key, uint64_t seed) {
 	return XXH3_64bits_withSeed(key.data(), key.size(), seed);
 }
 
+// Sets key's hash_func_cnt bits in bloomFilter (bit_array_size is in bytes). The bit positions come
+// from two hashes combined as h1 + i*h2 (the Kirsch–Mitzenmacher trick).
 void insert_to_bloom_filter(const std::string &key, std::vector<uint8_t> &bloomFilter, uint64_t bit_array_size, uint32_t hash_func_cnt) {
 	uint64_t h1 = xxhash(key, BLOOM_FILTER_SEED_1);
 	uint64_t h2 = xxhash(key, BLOOM_FILTER_SEED_2);
@@ -53,6 +56,8 @@ void insert_to_bloom_filter(const std::string &key, std::vector<uint8_t> &bloomF
 	}
 }
 
+// False if any of key's hash_func_cnt bits is unset (the key is definitely absent); true means it may
+// be present. Checks the same bit positions insert_to_bloom_filter() sets.
 bool is_present_in_bloom_filter(const std::string &key, const uint32_t hash_func_cnt, std::vector<uint8_t> &bloom_filter) {
 	uint64_t h1 = xxhash(key, BLOOM_FILTER_SEED_1);
 	uint64_t h2 = xxhash(key, BLOOM_FILTER_SEED_2);
@@ -72,6 +77,7 @@ bool is_present_in_bloom_filter(const std::string &key, const uint32_t hash_func
 	return true;
 }
 
+// Continues crc over one entry's op, key_len, key, val_len and val, in the same order they sit on disk.
 uint32_t key_val_checksum(Operation op, uint32_t crc, const std::string &key, const std::string &val) {
     uint32_t key_len = key.length();
 	uint32_t val_len = val.length();
@@ -85,6 +91,8 @@ uint32_t key_val_checksum(Operation op, uint32_t crc, const std::string &key, co
 	return crc;
 }
 
+// Writes the header: magic, version, ss_table_index, total entry count, then a CRC over version
+// through entry count. False if any write fails.
 bool write_header_block(std::FILE *ss_table_file, uint64_t ss_table_index, std::uint64_t total_entry_cnt){
     uint32_t magic_number = SS_TABLE_MAGIC_NUMBER;
     uint8_t version = SS_TABLE_VERSION;
@@ -105,6 +113,8 @@ bool write_header_block(std::FILE *ss_table_file, uint64_t ss_table_index, std::
         write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
+// Writes one data block: entry count, each entry (op, key_len, key, val_len, val; a tombstone is a
+// del entry with an empty value), then a CRC over the block. False if any write fails.
 bool write_data_block(std::FILE *ss_table_file, std::vector<Record> &data){
     uint64_t entry_cnt = data.size();
 
@@ -140,6 +150,8 @@ bool write_data_block(std::FILE *ss_table_file, std::vector<Record> &data){
     return write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
+// Writes the Bloom filter block: bit array size (in bytes), hash function count, the bit array,
+// then a CRC over all of it. False if any write fails.
 bool write_bloom_filter_block(std::FILE *ss_table_file, uint64_t bit_array_size, uint32_t hash_func_cnt, const std::vector<uint8_t> &bloom_filter_bit_array){
     uint32_t crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, reinterpret_cast<const Bytef *>(&bit_array_size), sizeof(bit_array_size));
@@ -159,6 +171,8 @@ bool write_bloom_filter_block(std::FILE *ss_table_file, uint64_t bit_array_size,
     return write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
+// Writes the sparse index block: block count, one (first key, block offset) entry per data block,
+// then a CRC over all of it. False if any write fails.
 bool write_sparse_index_block(std::FILE *ss_table_file, std::vector<std::pair<std::string, uint64_t>> &sparse_data){
     uint32_t crc = crc32(0L, Z_NULL, 0);
 
@@ -183,6 +197,7 @@ bool write_sparse_index_block(std::FILE *ss_table_file, std::vector<std::pair<st
     return write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
+// Writes the footer: the Bloom filter and sparse index offsets, then a CRC over both. False if any write fails.
 bool write_footer_block(std::FILE *ss_table_file, uint64_t bloom_filter_offset, uint64_t sparse_index_offset){
     uint32_t crc = crc32(0L, Z_NULL, 0);
 
@@ -194,6 +209,8 @@ bool write_footer_block(std::FILE *ss_table_file, uint64_t bloom_filter_offset, 
         write_bytes(ss_table_file, &crc, sizeof(crc));
 }
 
+// Reads the footer from the last FOOTER_SIZE bytes of the file and verifies its checksum.
+// Throws "corrupted footer" on a mismatch.
 FooterData read_footer_block(std::fstream &ss_table_file) {
     ss_table_file.seekg(-static_cast<int64_t>(FOOTER_SIZE), std::ios::end);
 
@@ -215,6 +232,8 @@ FooterData read_footer_block(std::fstream &ss_table_file) {
     return data;
 }
 
+// Reads the sparse index block at sparse_index_offset into its (first key, block offset) pairs and
+// verifies its checksum. Throws on a short read or a mismatch.
 SparseIndexData read_sparse_index_block(std::fstream &ss_table_file, uint64_t sparse_index_offset){
     ss_table_file.seekg(sparse_index_offset, std::ios::beg);
 
@@ -256,6 +275,8 @@ SparseIndexData read_sparse_index_block(std::fstream &ss_table_file, uint64_t sp
     return data;
 }
 
+// Reads the one data block at offset (a tombstone comes back with val = nullopt) and verifies its
+// checksum. Throws on an empty block, a short read, or a mismatch.
 DataBlockData read_data_block_by_offset(std::fstream &ss_table_file, uint64_t offset){
     ss_table_file.seekg(offset, std::ios::beg);
 
@@ -324,6 +345,8 @@ DataBlockData read_data_block_by_offset(std::fstream &ss_table_file, uint64_t of
 
 //______________________________________________________________________________________________________________________________________________________________________________________________________
 
+// Sets the file name to data/ss_table_<table_index>.bin. Read mode opens the existing file (throws if it
+// doesn't exist); write mode creates it, or empties an existing one (throws if it can't).
 SsTable::SsTable(uint64_t table_index, OpenMode mode){
     ss_table_file_name = SS_TABLE_FILE_NAME + "_" + std::to_string(table_index) + ".bin";
     ss_table_index = table_index;
@@ -344,11 +367,15 @@ SsTable::SsTable(uint64_t table_index, OpenMode mode){
 }
 
 
+// Closes the read stream; the write-mode FILE* is closed by its unique_ptr.
 SsTable::~SsTable(){
     ss_table_file.close();
 }
 
 
+// Full scan: reads the header and every data block from the start of the file, checking the magic number,
+// that the stored index matches this file, and every checksum. Returns all entries (tombstones included)
+// in key order. Never reads the Bloom filter, sparse index or footer. Throws on any corruption.
 SsTableData SsTable::read_ss_table() {
 
     SsTableData curr_data;
@@ -449,6 +476,9 @@ SsTableData SsTable::read_ss_table() {
 }
 
 
+// Writes mem_table (tombstones included) as a complete v2 SSTable: header, data blocks of RECORDS_PER_BLOCK
+// entries, a Bloom filter sized for this entry count, sparse index, footer. Then syncs the file and its
+// directory. False if any step fails or this SsTable wasn't opened in write mode.
 bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table){
 
     std::FILE *file = ss_table_write_file.get();
@@ -519,6 +549,9 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
 }
 
 
+// Point lookup: reads the footer and Bloom filter, and returns not_found if the filter rules the key out.
+// Otherwise uses the sparse index to pick the one block that could hold the key, reads only that block,
+// and returns found (with the value), tombstone, or not_found. Throws on corruption.
 LookupResult SsTable::get_value_from_ss_table(const std::string &search_key){
     LookupResult result = {
         LookupStatus::not_found,
@@ -588,6 +621,8 @@ LookupResult SsTable::get_value_from_ss_table(const std::string &search_key){
 }
 
 
+// Full scan returning this file's entries (tombstones included) in key order. If key is given, returns
+// only that key's entry, or nothing; the whole file is still read either way.
 std::vector<Record> SsTable::get_keys_from_ss_table(const std::optional<std::string> &key){
     SsTableData data = this->read_ss_table();
     std::map<std::string, std::optional<std::string>> temp_mpp;
@@ -612,6 +647,7 @@ std::vector<Record> SsTable::get_keys_from_ss_table(const std::optional<std::str
 }
 
 
+// Full scan returning this file's entries (tombstones included) with start <= key <= end, in key order.
 std::vector<Record> SsTable::get_range_from_ss_table(const std::string &start, const std::string &end){
 
     SsTableData data = this->read_ss_table();
@@ -639,6 +675,7 @@ std::vector<Record> SsTable::get_range_from_ss_table(const std::string &start, c
 }
 
 
+// Full scan returning this file's entries (tombstones included) whose key starts with prefix, in key order.
 std::vector<Record> SsTable::get_prefix_from_ss_table(const std::string &prefix){
 
     SsTableData data = this->read_ss_table();

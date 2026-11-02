@@ -19,10 +19,12 @@
 
 namespace {
 
+// Reads exactly size bytes into data. False on a short read or an error.
 bool read_bytes(std::FILE *file, void *data, std::size_t size) {
 	return size == 0 || std::fread(data, 1, size, file) == size;
 }
 
+// Moves file's position to offset relative to origin (64-bit safe fseek). True on success.
 bool seek_file(std::FILE *file, FileOffset offset, int origin) {
 #if defined(_WIN32)
 	return ::_fseeki64(file, offset, origin) == 0;
@@ -31,6 +33,7 @@ bool seek_file(std::FILE *file, FileOffset offset, int origin) {
 #endif
 }
 
+// Cuts file down to length bytes through its descriptor, retrying on EINTR. True on success.
 bool truncate_file(std::FILE *file, FileOffset length) {
 #if defined(_WIN32)
 	const int fd = ::_fileno(file);
@@ -48,6 +51,8 @@ bool truncate_file(std::FILE *file, FileOffset length) {
 #endif
 }
 
+// Reads length bytes into value. Returns false without reading if length is more than the bytes left
+// before file_size, so a corrupt length can't trigger a huge allocation.
 bool read_string(std::FILE *file, std::string &value, uint32_t length, FileOffset file_size) {
 	const FileOffset position = file_position(file);
 	// A corrupt length must not allocate more memory than the file can contain.
@@ -73,6 +78,7 @@ struct WalData {
 	std::string val;
 };
 
+// CRC32 over the header fields version, index, operation, key_len and val_len (magic excluded).
 uint32_t calc_header_checksum(const WalData &record) {
 	uint32_t crc = crc32(0L, Z_NULL, 0);
 
@@ -85,6 +91,7 @@ uint32_t calc_header_checksum(const WalData &record) {
 	return crc;
 }
 
+// Continues header_checksum over the key bytes, then the value bytes, giving the record checksum.
 uint32_t calc_record_checksum(const WalData &record, uint32_t header_checksum) {
 	uint32_t crc = crc32(header_checksum, reinterpret_cast<const Bytef *>(record.key.c_str()), record.key_len);
 	crc = crc32(crc, reinterpret_cast<const Bytef *>(record.val.c_str()), record.val_len);
@@ -92,6 +99,8 @@ uint32_t calc_record_checksum(const WalData &record, uint32_t header_checksum) {
 	return crc;
 }
 
+// Opens data/wal.bin for reading and appending (creating it if missing), then syncs data/ so a newly
+// created file survives a power loss. Throws std::system_error if either step fails.
 Wal::Wal() : wal_filename(WAL_FILE_NAME) {
 	wal_log_file.reset(std::fopen(wal_filename.c_str(), "a+b"));
 	if (!wal_log_file) {
@@ -103,6 +112,9 @@ Wal::Wal() : wal_filename(WAL_FILE_NAME) {
 	}
 }
 
+// Appends one record (header, header CRC, key, value, record CRC), then flushes and syncs it to disk.
+// Returns false without writing if an earlier write failed or the arguments are invalid. A write or
+// sync failure latches write_failed, so every later write fails too. On success, index goes up by 1.
 bool Wal::write(Operation operation, const std::string &key, const std::string &val){
     if(operation != Operation::set && operation!= Operation::del) {
 		return false;
@@ -153,6 +165,10 @@ bool Wal::write(Operation operation, const std::string &key, const std::string &
 	return true;
 }
 
+// Replays every valid record from the start of the WAL into db, stopping at the first incomplete or
+// invalid one (point-in-time recovery). Cuts everything from that record on off the file, syncs it and
+// reports the discarded bytes on stderr. Sets index to one past the last replayed record.
+// Throws if the WAL is unusable or an I/O step fails.
 void Wal::recover(DbEngine& db){
 
 	if (!wal_log_file || write_failed) {
@@ -270,6 +286,8 @@ void Wal::recover(DbEngine& db){
 	write_failed = false;
 }
 
+// Empties the WAL: reopens it with "w+b" (cutting it to 0 bytes), syncs, then reopens it for appending.
+// Returns false if any step fails, and write_failed then stays latched. Does not reset index.
 bool Wal::truncate() {
 	write_failed = true;
 	std::FILE *file = wal_log_file.release();

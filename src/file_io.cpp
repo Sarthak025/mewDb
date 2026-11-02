@@ -15,6 +15,8 @@
 namespace {
 
 #if !defined(_WIN32)
+// Forces fd's data to stable storage: F_FULLFSYNC on macOS (also empties the drive's own cache),
+// fsync elsewhere. Retries if a signal interrupts it (EINTR). True on success.
 bool sync_descriptor(int fd) {
 	int result;
 	do {
@@ -30,10 +32,13 @@ bool sync_descriptor(int fd) {
 
 } // namespace
 
+// Writes size bytes from data into file's stdio buffer. True only if every byte was accepted.
+// Does not flush or sync; sync_file() does that.
 bool write_bytes(std::FILE *file, const void *data, std::size_t size) {
 	return size == 0 || std::fwrite(data, 1, size, file) == size;
 }
 
+// Returns file's current byte offset (64-bit safe). Throws std::system_error if it can't be determined.
 FileOffset file_position(std::FILE *file) {
 #if defined(_WIN32)
 	const FileOffset position = ::_ftelli64(file);
@@ -46,6 +51,8 @@ FileOffset file_position(std::FILE *file) {
 	return position;
 }
 
+// Pushes file's stdio buffer to the OS (fflush), then forces it to stable storage.
+// False if the stream already had an error or either step fails.
 bool sync_file(std::FILE *file) {
 	if (std::ferror(file) || std::fflush(file) != 0) {
 		return false;
@@ -60,6 +67,9 @@ bool sync_file(std::FILE *file) {
 #endif
 }
 
+// Syncs the directory that contains file_path (the current directory if it has none), so a file created,
+// renamed or deleted in it survives a power loss. On failure errno comes from the sync, not the close.
+// Does nothing and returns true on Windows.
 bool sync_parent_directory(const std::string &file_path) {
 #if defined(_WIN32)
 	(void)file_path;
