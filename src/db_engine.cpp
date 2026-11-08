@@ -5,21 +5,19 @@
 #include "manifest.h"
 #include <iostream>
 #include <stdexcept>
+#include <memory>
 
 
 // Opens the WAL and replays it into curr_mem_table, then loads (or creates) the manifest.
 // Throws if either file can't be opened or the WAL can't be recovered.
 DbEngine::DbEngine(){
-    wal_instance = new Wal();
+    wal_instance = std::make_unique<Wal>();
     wal_instance->recover(*this);
-    manifest_instance = new Manifest();
+    manifest_instance = std::make_unique<Manifest>();
 }
 
 // Frees the WAL and manifest, closing their files. Does not flush: unflushed writes stay in the WAL.
-DbEngine::~DbEngine(){
-    delete wal_instance;
-    delete manifest_instance;
-}
+DbEngine::~DbEngine(){}
 
 // WAL replay version of set(): puts key=val into curr_mem_table and updates mem_table_size.
 // Writes nothing to the WAL and never flushes.

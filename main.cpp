@@ -154,6 +154,16 @@ void startRepl(DbEngine &Db) {
 
 int main() {
 	std::cout << "..........Starting mewDb.........." << std::endl;
-	DbEngine Db;
-	startRepl(Db);
+	
+	try
+	{
+		DbEngine Db;
+		startRepl(Db);
+	}
+	catch(const std::exception& e)
+	{
+		std::cerr << "ERROR: " << e.what() << '\n';
+		return 1;
+	}
+
 }
