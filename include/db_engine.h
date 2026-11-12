@@ -1,18 +1,32 @@
 #pragma once
 
+#include "file_io.h"
+#include "constants.h"
+
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
 #include <vector>
 #include <memory>
+#include <filesystem>
 
 class Wal;
 class Manifest;
 
+struct Options {
+	std::filesystem::path data_dir = "data";
+	uint64_t mem_table_size_limit = MEM_TABLE_SIZE_LIMIT;
+	WalSyncLevel wal_sync = WalSyncLevel::power_loss;
+	bool create_if_missing = true;
+};
+
+
 class DbEngine {
 private:
 	friend class Wal;
+
+	Options options;
 	std::map<std::string, std::optional<std::string>> curr_mem_table;
 	uint64_t mem_table_size = 0; //This is just the length of all the keys and vals
 	std::unique_ptr<Wal> wal_instance;
@@ -23,7 +37,7 @@ private:
 	void check_mem_table_size_to_flush();
 	
 public:
-	DbEngine();
+	explicit DbEngine(Options options = {});
 	~DbEngine();
 	void set(const std::string &key, const std::string &val);
 	std::optional<std::string> get(const std::string &key);

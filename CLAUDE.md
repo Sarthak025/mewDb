@@ -86,7 +86,7 @@ The full byte-level SSTable v2 schema lives in **`ss_table_schema.md`** (project
 - `practice/wal.cpp` — standalone WAL write + recover practice (complete)
 - `practice/bloom_filter.cpp` — standalone Bloom filter practice (6a, complete) — see "Bloom Filters + Sparse Index" below for the design and the measured false-positive-rate investigation
 - `practice/chrono.cpp` — Phase 7 timing practice (`std::chrono`); currently uses `high_resolution_clock` (practice only — the benchmark will use `steady_clock`)
-- `tests/` — **gitignored, not part of the repo.** The user's decision: the repo is only for the database itself; testing is Claude's job, and Claude writes/maintains tests here. Currently `tests/wal_recovery_test.py` (WAL v2 byte format, torn-tail vs corruption classification, point-in-time recovery, a real `kill -9` crash test), `tests/command_surface_test.py` (every command across several flushes, a restart with WAL replay, and `COMPACT`; plus `DELETE` of an already-deleted key with its tombstone in the MemTable, replayed from the WAL, and flushed to an SSTable; a delete-only workload must flush; compacting away everything must leave zero SSTable files, an empty manifest with an unchanged next index, a working empty database across a restart, and a fresh index for the next flush), and `tests/crash_stress_test.py` (randomized: pipes batches of SET/DELETE/COMPACT, `SIGKILL`s at a random moment — often mid-flush or mid-compaction — restarts, checks every acknowledged write survived and recovery never reports corruption; the writer must exit 0 or −9, so an abort/segfault can't pass as an early kill; `MEWDB_CRASH_TRIALS` / `MEWDB_CRASH_SEED` env vars). Run each as `python3 tests/<file> <path-to-mewDb-binary>` — each test runs the binary with `cwd` set to a fresh temp dir, so the real `data/` is never touched. Verify against a Release build made in the scratchpad from the repo's sources, not the user's `build/`
+- `tests/` — **gitignored, not part of the repo.** The user's decision: the repo is only for the database itself; testing is Claude's job, and Claude writes/maintains tests here. Currently `tests/wal_recovery_test.py` (WAL v2 byte format, torn-tail vs corruption classification, point-in-time recovery, a real `kill -9` crash test), `tests/command_surface_test.py` (every command across several flushes, a restart with WAL replay, and `COMPACT`; plus `DELETE` of an already-deleted key with its tombstone in the MemTable, replayed from the WAL, and flushed to an SSTable; a delete-only workload must flush; compacting away everything must leave zero SSTable files, an empty manifest with an unchanged next index, a working empty database across a restart, and a fresh index for the next flush), and `tests/crash_stress_test.py` (randomized: pipes batches of SET/DELETE/COMPACT, `SIGKILL`s at a random moment — often mid-flush or mid-compaction — restarts, checks every acknowledged write survived and recovery never reports corruption; the writer must exit 0 or −9, so an abort/segfault can't pass as an early kill; `MEWDB_CRASH_TRIALS` / `MEWDB_CRASH_SEED` env vars), and `tests/durability_test.py` + `tests/sync_trace.c` (the `.c` is compiled to a dylib and injected with `DYLD_INSERT_LIBRARIES` on macOS; it logs every successful sync/rename/unlink, so the test can assert their order — creating a database, opening one, flush, compaction — and that a flush replaces, never appends to, a leftover SSTable). Since 2026-11-13 every test's setUp writes an empty manifest (`MEWDB\n1\n0\n0\n`) — "an existing, empty database" — so the tests don't depend on the opening rules; creating a database is tested on its own (`test_repl_creates_database_in_empty_data_dir`, `test_first_start_makes_new_file_names_durable`). Run each as `python3 tests/<file> <path-to-mewDb-binary>` — each test runs the binary with `cwd` set to a fresh temp dir, so the real `data/` is never touched. Verify against a Release build made in the scratchpad from the repo's sources, not the user's `build/`
 
 ### Correct response format
 ```
@@ -429,6 +429,22 @@ The last row is verified on `a667a61`: today it hides every SSTable, and the nex
 3. The naming module, full paths into each class, directory creation, and the "SSTables but no manifest" refusal.
 4. `wal_sync`.
 
+**Progress (working tree, reviewed 2026-11-13; builds, nothing committed):**
+- Step 1 mostly done:
+  - The constructor parameter is by value, named `entered_options`, which fixed the member-shadowing bug. The body had normalized the parameter, not the member.
+  - `data_dir` is made absolute + `lexically_normal()` at open.
+  - Still open: a `default:` in the validation switch, `OS_crash` → `os_crash`, `#include <file_io.h>` → quotes.
+- Step 3 half done:
+  - `Wal(path, level)` and `Manifest(path, database_exists)` take full paths. The temp manifest path comes from `parent_path()`. `Manifest` no longer checks for its own file; `DbEngine` decides.
+  - **SSTables still use bare names relative to the cwd** (`ss_table.cpp:351`, `compact()`'s deletion). Their directory sync hits the cwd too.
+  - Verified: two databases opened from one cwd both write `ss_table_0.bin` there. The second overwrites the first, and the first then silently returns `NOT_FOUND` with no checksum error.
+  - No naming module yet.
+- Constructor order is now manifest → WAL (was WAL → manifest). A crash during creation can therefore leave a lone `temp_manifest.txt`, never a lone `wal.bin`.
+- **The opening rules as written differ from the design above, pending the user's decision:**
+  - `create_if_missing` governs the manifest, not just the directory (RocksDB's meaning). The REPL's default `false` therefore can't create a database, even in an empty `data/`. Claude recommended keeping this meaning, with `main.cpp` passing `true`.
+  - The refusal is "directory not empty", not "`ss_table_*.bin` present". That blocks on `.DS_Store`, and permanently after a crash leaves `temp_manifest.txt`.
+  - `create_directories` is used, not `create_directory`, and the parent isn't synced.
+
 ### WAL durability detour (2026-10-03 → in progress)
 **How it started:** researching `fsync` for the benchmark raised "when `SET` returns `OK`, where does the WAL record actually live?" `Wal::write()` made nine `fstream::write()` calls and never flushed; the only `close()` calls were in `truncate()` and the destructor. A `kill -9` experiment (SET 3 keys → kill → restart → GET) **lost all 3 acknowledged keys** — they were still in the stream's user-space buffer. The Phase 6 "two-process WAL-recovery test" had passed only because that first process exited via `EXIT`, running the destructor which flushed the buffer — it proved recovery after a *clean shutdown*, never after a crash.
 
@@ -527,7 +543,9 @@ mewDb/
 ├── tests/                 ← GITIGNORED — Claude-maintained test suite, not part of the repo
 │   ├── wal_recovery_test.py   ← WAL crash-recovery tests (run: python3 tests/wal_recovery_test.py <mewDb binary>)
 │   ├── command_surface_test.py ← all commands across flushes/restart/COMPACT (same invocation)
-│   └── crash_stress_test.py   ← randomized SIGKILL crash-consistency test (MEWDB_CRASH_TRIALS/SEED env vars)
+│   ├── crash_stress_test.py   ← randomized SIGKILL crash-consistency test (MEWDB_CRASH_TRIALS/SEED env vars)
+│   ├── durability_test.py     ← sync/rename/unlink order on create, open, flush, compact (macOS tracer)
+│   └── sync_trace.c           ← the tracer durability_test.py injects with DYLD_INSERT_LIBRARIES
 ├── data/                  ← runtime output: wal.bin, ss_table_N.bin (v2 format), manifest.txt — gitignored wholesale
 └── build/                 ← generated by cmake (gitignored)
 ```

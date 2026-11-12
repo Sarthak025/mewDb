@@ -3,17 +3,81 @@
 #include "ss_table.h"
 #include "constants.h"
 #include "manifest.h"
+
 #include <iostream>
 #include <stdexcept>
 #include <memory>
+#include <filesystem>
+
+
+namespace {
+
+void validate_options(const Options &options) {
+    if(options.data_dir.empty()){
+        throw std::invalid_argument("data_dir must not be empty");
+    }
+
+    // we allow any positive memtable size including 0
+
+    switch (options.wal_sync)
+    {
+    case WalSyncLevel::process_crash:
+    case WalSyncLevel::os_crash:
+    case WalSyncLevel::power_loss:
+        break;
+    default:
+        throw std::invalid_argument("Invalid wal_sync level");
+    }
+}
+
+} // namespace
 
 
 // Opens the WAL and replays it into curr_mem_table, then loads (or creates) the manifest.
 // Throws if either file can't be opened or the WAL can't be recovered.
-DbEngine::DbEngine(){
-    wal_instance = std::make_unique<Wal>();
+DbEngine::DbEngine(Options entered_options) : options(entered_options) {
+
+    validate_options(options);
+    options.data_dir = std::filesystem::absolute(options.data_dir).lexically_normal();
+
+    namespace fs = std::filesystem;
+    const auto& dir = options.data_dir;
+
+    if (fs::exists(dir)) {
+        if (!fs::is_directory(dir)) {
+            throw std::invalid_argument("data_dir is not a directory: " + dir.string());
+        }
+    } else {
+        if (!options.create_if_missing) {
+            throw std::runtime_error("Database does not exist: " + dir.string());
+        }
+        fs::create_directories(dir);
+    }
+
+
+    const auto manifest_path = dir / MANIFEST_FILE_NAME;
+    const auto wal_path = dir / WAL_FILE_NAME;
+    const bool database_exists = fs::exists(manifest_path);
+
+    if (database_exists) {
+        if (!fs::is_regular_file(manifest_path)) {
+            throw std::runtime_error("Manifest is not a regular file: " + manifest_path.string());
+        }
+    } else {
+        if (!options.create_if_missing) {
+            throw std::runtime_error("Database manifest is missing: " + manifest_path.string());
+        }
+
+        if (!fs::is_empty(dir)) {
+            throw std::runtime_error("Cannot create database in a nonempty directory without a manifest: " + dir.string());
+        }
+    }
+
+
+    manifest_instance = std::make_unique<Manifest>(manifest_path, database_exists);
+
+    wal_instance = std::make_unique<Wal>(wal_path, options.wal_sync);
     wal_instance->recover(*this);
-    manifest_instance = std::make_unique<Manifest>();
 }
 
 // Frees the WAL and manifest, closing their files. Does not flush: unflushed writes stay in the WAL.

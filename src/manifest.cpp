@@ -41,12 +41,13 @@ std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const 
     return result;
 }
 
-// If the manifest file exists, opens it for reading and loads its magic, version, next index and SSTable
-// count (throws on a wrong magic). Otherwise creates an empty manifest with next index 0.
-Manifest::Manifest(){
-    manifest_file_name = MANIFEST_FILE_NAME;
+// If database_exists, opens manifest_path for reading and loads its magic, version, next index and SSTable
+// count (throws on a wrong magic). Otherwise creates an empty manifest there with next index 0.
+Manifest::Manifest(std::filesystem::path manifest_path, bool database_exists){
+    manifest_file_name = manifest_path.string();
+    temp_manifest_file_name = (manifest_path.parent_path() / MANIFEST_TEMP_FILE_NAME).string();
 
-    if (std::filesystem::is_regular_file(manifest_file_name)) {
+    if (database_exists) {
         //manifest already exists
         manifest_file.open(manifest_file_name, std::ios::in);
 
@@ -166,7 +167,7 @@ bool Manifest::write_manifest(uint64_t next_index, const std::vector<uint64_t> &
     }
 
     // Syncing temp file before rename else rename can reach disk before contents
-    std::FILE *temp_manifest = std::fopen(MANIFEST_TEMP_FILE_NAME.c_str(), "wb");
+    std::FILE *temp_manifest = std::fopen(temp_manifest_file_name.c_str(), "wb");
     if (!temp_manifest) {
         return false;
     }
@@ -178,7 +179,7 @@ bool Manifest::write_manifest(uint64_t next_index, const std::vector<uint64_t> &
     //rename temp manifest file to original
     manifest_file.close();
     std::error_code rename_error;
-    std::filesystem::rename(MANIFEST_TEMP_FILE_NAME, manifest_file_name, rename_error);
+    std::filesystem::rename(temp_manifest_file_name, manifest_file_name, rename_error);
     manifest_file.open(manifest_file_name, std::ios::in);
     if (rename_error) {
         return false;

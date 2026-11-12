@@ -1,10 +1,13 @@
 #pragma once
 
+#include "constants.h"
+#include "file_io.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <string>
-#include "constants.h"
+#include <filesystem>
 
 class DbEngine;
 
@@ -16,7 +19,7 @@ private:
 	bool write_failed = false;
 
 public:
-	Wal();
+	explicit Wal(std::filesystem::path wal_path, WalSyncLevel wal_sync);
 
 	bool write(Operation operation, const std::string &key, const std::string &val);
 	void recover(DbEngine& db);

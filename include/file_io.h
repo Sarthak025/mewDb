@@ -12,6 +12,12 @@ using FileOffset = std::int64_t;
 using FileOffset = off_t;
 #endif
 
+enum class WalSyncLevel {
+	process_crash,
+	os_crash,
+	power_loss
+};
+
 bool write_bytes(std::FILE *file, const void *data, std::size_t size);
 
 FileOffset file_position(std::FILE *file);

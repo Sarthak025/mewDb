@@ -1,9 +1,12 @@
 #pragma once
 
+#include "file_io.h"
+
 #include <cstdint>
 #include <vector>
 #include <string>
 #include <fstream>
+#include <filesystem>
 
 // Format for manifest file
 // 
@@ -18,6 +21,7 @@
 class Manifest {
 private:
     std::string manifest_file_name;
+    std::string temp_manifest_file_name;
     std::fstream manifest_file;
     uint32_t manifest_version;
     uint64_t next_ss_table_index;
@@ -25,7 +29,7 @@ private:
     bool write_manifest(uint64_t next_index, const std::vector<uint64_t> &indices);
 
 public:
-    Manifest();
+    explicit Manifest(std::filesystem::path manifest_path, bool database_exists);
     ~Manifest();
     std::vector<uint64_t> get_ss_table_indices();
     uint64_t get_next_ss_table_index();

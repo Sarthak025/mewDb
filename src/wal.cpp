@@ -99,14 +99,14 @@ uint32_t calc_record_checksum(const WalData &record, uint32_t header_checksum) {
 	return crc;
 }
 
-// Opens data/wal.bin for reading and appending (creating it if missing), then syncs data/ so a newly
+// Opens wal_path for reading and appending (creating it if missing), then syncs its directory so a newly
 // created file survives a power loss. Throws std::system_error if either step fails.
-Wal::Wal() : wal_filename(WAL_FILE_NAME) {
+Wal::Wal(std::filesystem::path wal_path, WalSyncLevel wal_sync) : wal_filename(wal_path.string()) {
 	wal_log_file.reset(std::fopen(wal_filename.c_str(), "a+b"));
 	if (!wal_log_file) {
 		throw std::system_error(errno, std::generic_category(), "Cannot open WAL");
 	}
-	// "a+b" may have just created wal.bin; that new name lives in data/, not in the file.
+	// "a+b" may have just created the file; that new name lives in its directory, not in the file.
 	if (!sync_parent_directory(wal_filename)) {
 		throw std::system_error(errno, std::generic_category(), "Cannot sync WAL directory");
 	}
