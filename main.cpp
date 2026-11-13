@@ -157,7 +157,9 @@ int main() {
 	
 	try
 	{
-		DbEngine Db;
+		Options options{};
+		options.create_if_missing = true;
+		DbEngine Db(options);
 		startRepl(Db);
 	}
 	catch(const std::exception& e)

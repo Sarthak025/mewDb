@@ -3,14 +3,27 @@
 #include "ss_table.h"
 #include "constants.h"
 #include "manifest.h"
+#include "file_io.h"
 
+#include <cerrno>
 #include <iostream>
 #include <stdexcept>
 #include <memory>
 #include <filesystem>
+#include <system_error>
 
 
 namespace {
+
+bool is_known_sync_level(WalSyncLevel level) {
+    switch (level) {
+        case WalSyncLevel::process_crash:
+        case WalSyncLevel::os_crash:
+        case WalSyncLevel::power_loss:
+            return true;
+    }
+    return false;
+}
 
 void validate_options(const Options &options) {
     if(options.data_dir.empty()){
@@ -19,15 +32,10 @@ void validate_options(const Options &options) {
 
     // we allow any positive memtable size including 0
 
-    switch (options.wal_sync)
-    {
-    case WalSyncLevel::process_crash:
-    case WalSyncLevel::os_crash:
-    case WalSyncLevel::power_loss:
-        break;
-    default:
-        throw std::invalid_argument("Invalid wal_sync level");
+    if (!is_known_sync_level(options.wal_sync)) {
+        throw std::invalid_argument("wal_sync: unknown sync level");
     }
+
 }
 
 } // namespace
@@ -39,6 +47,9 @@ DbEngine::DbEngine(Options entered_options) : options(entered_options) {
 
     validate_options(options);
     options.data_dir = std::filesystem::absolute(options.data_dir).lexically_normal();
+    if (options.data_dir.filename().empty()) {
+        options.data_dir = options.data_dir.parent_path();
+    }
 
     namespace fs = std::filesystem;
     const auto& dir = options.data_dir;
@@ -49,32 +60,35 @@ DbEngine::DbEngine(Options entered_options) : options(entered_options) {
         }
     } else {
         if (!options.create_if_missing) {
-            throw std::runtime_error("Database does not exist: " + dir.string());
+            throw std::runtime_error("Database does not exist: " + dir.string() + " (create_if_missing is false)");
         }
-        fs::create_directories(dir);
+        fs::create_directory(dir);
     }
 
 
     const auto manifest_path = dir / MANIFEST_FILE_NAME;
     const auto wal_path = dir / WAL_FILE_NAME;
-    const bool database_exists = fs::exists(manifest_path);
+    const bool manifest_already_present = fs::exists(manifest_path);
 
-    if (database_exists) {
+    if (manifest_already_present) {
         if (!fs::is_regular_file(manifest_path)) {
             throw std::runtime_error("Manifest is not a regular file: " + manifest_path.string());
         }
     } else {
         if (!options.create_if_missing) {
-            throw std::runtime_error("Database manifest is missing: " + manifest_path.string());
+            throw std::runtime_error("Database manifest is missing: " + manifest_path.string() + " (create_if_missing is false)");
         }
 
         if (!fs::is_empty(dir)) {
             throw std::runtime_error("Cannot create database in a nonempty directory without a manifest: " + dir.string());
         }
+
+        if (!sync_parent_directory(dir.string())) {
+            throw std::system_error(errno, std::generic_category(), "Cannot sync parent of data directory");
+        }
     }
 
-
-    manifest_instance = std::make_unique<Manifest>(manifest_path, database_exists);
+    manifest_instance = std::make_unique<Manifest>(manifest_path, manifest_already_present);
 
     wal_instance = std::make_unique<Wal>(wal_path, options.wal_sync);
     wal_instance->recover(*this);

@@ -29,7 +29,7 @@ private:
     bool write_manifest(uint64_t next_index, const std::vector<uint64_t> &indices);
 
 public:
-    explicit Manifest(std::filesystem::path manifest_path, bool database_exists);
+    explicit Manifest(std::filesystem::path manifest_path, bool manifest_already_present);
     ~Manifest();
     std::vector<uint64_t> get_ss_table_indices();
     uint64_t get_next_ss_table_index();

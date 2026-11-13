@@ -41,13 +41,13 @@ std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const 
     return result;
 }
 
-// If database_exists, opens manifest_path for reading and loads its magic, version, next index and SSTable
+// If manifest_already_present, opens manifest_path for reading and loads its magic, version, next index and SSTable
 // count (throws on a wrong magic). Otherwise creates an empty manifest there with next index 0.
-Manifest::Manifest(std::filesystem::path manifest_path, bool database_exists){
+Manifest::Manifest(std::filesystem::path manifest_path, bool manifest_already_present){
     manifest_file_name = manifest_path.string();
     temp_manifest_file_name = (manifest_path.parent_path() / MANIFEST_TEMP_FILE_NAME).string();
 
-    if (database_exists) {
+    if (manifest_already_present) {
         //manifest already exists
         manifest_file.open(manifest_file_name, std::ios::in);
 

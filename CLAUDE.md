@@ -86,7 +86,7 @@ The full byte-level SSTable v2 schema lives in **`ss_table_schema.md`** (project
 - `practice/wal.cpp` — standalone WAL write + recover practice (complete)
 - `practice/bloom_filter.cpp` — standalone Bloom filter practice (6a, complete) — see "Bloom Filters + Sparse Index" below for the design and the measured false-positive-rate investigation
 - `practice/chrono.cpp` — Phase 7 timing practice (`std::chrono`); currently uses `high_resolution_clock` (practice only — the benchmark will use `steady_clock`)
-- `tests/` — **gitignored, not part of the repo.** The user's decision: the repo is only for the database itself; testing is Claude's job, and Claude writes/maintains tests here. Currently `tests/wal_recovery_test.py` (WAL v2 byte format, torn-tail vs corruption classification, point-in-time recovery, a real `kill -9` crash test), `tests/command_surface_test.py` (every command across several flushes, a restart with WAL replay, and `COMPACT`; plus `DELETE` of an already-deleted key with its tombstone in the MemTable, replayed from the WAL, and flushed to an SSTable; a delete-only workload must flush; compacting away everything must leave zero SSTable files, an empty manifest with an unchanged next index, a working empty database across a restart, and a fresh index for the next flush), and `tests/crash_stress_test.py` (randomized: pipes batches of SET/DELETE/COMPACT, `SIGKILL`s at a random moment — often mid-flush or mid-compaction — restarts, checks every acknowledged write survived and recovery never reports corruption; the writer must exit 0 or −9, so an abort/segfault can't pass as an early kill; `MEWDB_CRASH_TRIALS` / `MEWDB_CRASH_SEED` env vars), and `tests/durability_test.py` + `tests/sync_trace.c` (the `.c` is compiled to a dylib and injected with `DYLD_INSERT_LIBRARIES` on macOS; it logs every successful sync/rename/unlink, so the test can assert their order — creating a database, opening one, flush, compaction — and that a flush replaces, never appends to, a leftover SSTable). Since 2026-11-13 every test's setUp writes an empty manifest (`MEWDB\n1\n0\n0\n`) — "an existing, empty database" — so the tests don't depend on the opening rules; creating a database is tested on its own (`test_repl_creates_database_in_empty_data_dir`, `test_first_start_makes_new_file_names_durable`). Run each as `python3 tests/<file> <path-to-mewDb-binary>` — each test runs the binary with `cwd` set to a fresh temp dir, so the real `data/` is never touched. Verify against a Release build made in the scratchpad from the repo's sources, not the user's `build/`
+- `tests/` — **gitignored, not part of the repo.** The user's decision: the repo is only for the database itself; testing is Claude's job, and Claude writes/maintains tests here. Currently `tests/wal_recovery_test.py` (WAL v2 byte format, torn-tail vs corruption classification, point-in-time recovery, a real `kill -9` crash test), `tests/command_surface_test.py` (every command across several flushes, a restart with WAL replay, and `COMPACT`; plus `DELETE` of an already-deleted key with its tombstone in the MemTable, replayed from the WAL, and flushed to an SSTable; a delete-only workload must flush; compacting away everything must leave zero SSTable files, an empty manifest with an unchanged next index, a working empty database across a restart, and a fresh index for the next flush), and `tests/crash_stress_test.py` (randomized: pipes batches of SET/DELETE/COMPACT, `SIGKILL`s at a random moment — often mid-flush or mid-compaction — restarts, checks every acknowledged write survived and recovery never reports corruption; the writer must exit 0 or −9, so an abort/segfault can't pass as an early kill; `MEWDB_CRASH_TRIALS` / `MEWDB_CRASH_SEED` env vars), and `tests/durability_test.py` + `tests/sync_trace.c` (the `.c` is compiled to a dylib and injected with `DYLD_INSERT_LIBRARIES` on macOS; it logs every successful sync/rename/unlink, so the test can assert their order — creating a database, opening one, flush, compaction — and that a flush replaces, never appends to, a leftover SSTable). Since 2026-11-13 every test's setUp writes an empty manifest (`MEWDB\n1\n0\n0\n`) — "an existing, empty database" — so the tests don't depend on the opening rules; creating a database is tested on its own (`test_repl_creates_database_in_empty_data_dir`, `test_repl_creates_missing_data_dir`, `test_first_start_makes_new_file_names_durable`, `test_first_start_without_data_dir_makes_directory_durable`). Run each as `python3 tests/<file> <path-to-mewDb-binary>` — each test runs the binary with `cwd` set to a fresh temp dir, so the real `data/` is never touched. The exception is `tests/options_test.py [source-root]` + `tests/options_test.cpp` (added 2026-11-13): it compiles the `.cpp` against the database sources (the repo by default, or a scratchpad copy's root) in a temp dir, then constructs `DbEngine` directly with different `Options`. The REPL always passes `create_if_missing = true`, so validation and the `false` paths are only reachable from C++. It covers validation before side effects, both flag values, one-level creation, trailing slashes, and the no-manifest cases. Verify against a Release build made in the scratchpad from the repo's sources, not the user's `build/`
 
 ### Correct response format
 ```
@@ -368,7 +368,7 @@ Zero errors, zero crashes, across roughly 2,000 commands. `compact()` needed **n
 | `data_dir` | `std::filesystem::path` | `"data"` | one directory holds every file |
 | `mem_table_size_limit` | `uint64_t` | `MEM_TABLE_SIZE_LIMIT` | the benchmark sweeps it; the REPL keeps 1000 |
 | `wal_sync` | `enum class`, values named by guarantee | power loss (strongest) | today's behaviour; the benchmark picks levels explicitly |
-| `create_if_missing` | `bool` | `false` | a missing directory is an error unless the caller asks otherwise (the benchmark sets `true`) |
+| `create_if_missing` | `bool` | `false` | a missing **database** (no manifest) is an error unless the caller asks otherwise; the REPL and the benchmark set `true` |
 
 The design combines the user's decisions (2026-11-05) with Claude's answers and revisions, which the user reviewed and accepted on 2026-11-06.
 
@@ -385,16 +385,18 @@ Why not "pass the directory and let each class append its own name": Phase 8's b
 
 Numbered WALs also let the manifest record which WALs are already flushed, which closes item #10.
 
-**Opening the database.** First validate the values. Then, if `create_if_missing` is set and the directory is missing, create one level only (`create_directory`) and sync its parent, since a directory's name lives in its parent. Trap: `path("data/").parent_path()` is `"data"`. Then open. The directory can be in four states:
+**Opening the database.** First validate the values. Then, if `create_if_missing` is set and the directory is missing, create one level only (`create_directory`). Whenever a **new database** is created (no manifest), sync the directory's parent before creating the manifest, since a directory's name lives in its parent. That holds whether mewDb made the directory or someone ran `mkdir` (the tests do) or a kill landed between creating and syncing. So a manifest on disk implies the directory's name is durable. Revised 2026-11-13 from "sync the parent only when we create the directory", which missed those two cases. Trap: `lexically_normal()` keeps a trailing slash, and `path("/x/data/").parent_path()` is `"/x/data"`, so the open path strips it right after normalizing. Then open. The directory can be in four states:
 
 | State | Action |
 |---|---|
-| no directory | `create_if_missing` decides |
+| no directory | `create_if_missing`: create it, else refuse |
 | manifest present | open |
-| no manifest, no SSTable files | new database |
-| no manifest, `ss_table_*.bin` present | **refuse to open** (damage) |
+| no manifest, no SSTable files | `create_if_missing`: new database, else refuse |
+| no manifest, `ss_table_*.bin` present | **refuse to open** (damage), whatever the flag |
 
-The last row is verified on `a667a61`: today it hides every SSTable, and the next flush overwrites `ss_table_0.bin`. A lone `wal.bin` doesn't count: it's harmless, and legitimate after a crash during creation.
+The last row is verified on `a667a61`: today it hides every SSTable, and the next flush overwrites `ss_table_0.bin`. Leftovers that don't count: a lone `temp_manifest.txt` (a crash during creation, now that the manifest is created before the WAL), `.DS_Store`, and a lone `wal.bin` (harmless: with no SSTables, a fresh manifest plus WAL replay loses nothing).
+
+**`create_if_missing` meaning decided 2026-11-13 (user):** it governs the *database*, identified by its manifest, not just the directory. This is RocksDB's and LevelDB's meaning. The default stays `false`: a wrong path (a typo, the wrong cwd, an unmounted disk) then fails loudly instead of silently becoming a new empty database. Each caller that wants creation opts in. With `false`, a failed open changes nothing on disk: the directory is created only when the flag is set. LevelDB creates the directory unconditionally, because it needs it for its LOCK file before checking.
 
 **Sync levels**, named by minimum guarantee rather than by system call:
 
@@ -429,21 +431,26 @@ The last row is verified on `a667a61`: today it hides every SSTable, and the nex
 3. The naming module, full paths into each class, directory creation, and the "SSTables but no manifest" refusal.
 4. `wal_sync`.
 
-**Progress (working tree, reviewed 2026-11-13; builds, nothing committed):**
-- Step 1 mostly done:
+**Progress (working tree, 2026-11-13; compiles, not committed):**
+- Step 1 done:
   - The constructor parameter is by value, named `entered_options`, which fixed the member-shadowing bug. The body had normalized the parameter, not the member.
-  - `data_dir` is made absolute + `lexically_normal()` at open.
-  - Still open: a `default:` in the validation switch, `OS_crash` → `os_crash`, `#include <file_io.h>` → quotes.
+  - `data_dir` is made absolute + `lexically_normal()` at open, then a trailing slash is stripped.
+  - `os_crash`, the quoted `file_io.h` include, and removing `Wal`'s second default are done.
+  - The validation switch is fixed: `is_known_sync_level()` returns `true` per valid case, `false` after the switch.
 - Step 3 half done:
-  - `Wal(path, level)` and `Manifest(path, database_exists)` take full paths. The temp manifest path comes from `parent_path()`. `Manifest` no longer checks for its own file; `DbEngine` decides.
+  - `Wal(path, level)` and `Manifest(path, manifest_already_present)` take full paths. The temp manifest path comes from `parent_path()`. `Manifest` no longer checks for its own file; `DbEngine` decides.
   - **SSTables still use bare names relative to the cwd** (`ss_table.cpp:351`, `compact()`'s deletion). Their directory sync hits the cwd too.
   - Verified: two databases opened from one cwd both write `ss_table_0.bin` there. The second overwrites the first, and the first then silently returns `NOT_FOUND` with no checksum error.
+  - This is why 7 tests fail right now (4 in `command_surface_test.py`, 3 in `durability_test.py` counting the error): they look for SSTables in `data/` and find none. `wal_recovery_test.py` and `crash_stress_test.py` pass.
   - No naming module yet.
-- Constructor order is now manifest → WAL (was WAL → manifest). A crash during creation can therefore leave a lone `temp_manifest.txt`, never a lone `wal.bin`.
-- **The opening rules as written differ from the design above, pending the user's decision:**
-  - `create_if_missing` governs the manifest, not just the directory (RocksDB's meaning). The REPL's default `false` therefore can't create a database, even in an empty `data/`. Claude recommended keeping this meaning, with `main.cpp` passing `true`.
-  - The refusal is "directory not empty", not "`ss_table_*.bin` present". That blocks on `.DS_Store`, and permanently after a crash leaves `temp_manifest.txt`.
-  - `create_directories` is used, not `create_directory`, and the parent isn't synced.
+- Constructor order is now manifest → WAL (was WAL → manifest).
+- Opening rules:
+  - `create_if_missing` follows the decided meaning, and the directory is only created when it's set. Default `false`.
+  - `main.cpp` sets `create_if_missing = true`, so the REPL can create a database.
+  - Done 2026-11-13 (Claude, at the user's request): `create_directory` (one level; a missing parent throws and nothing is created) + parent sync on every new database, throwing `std::system_error` if it fails. Verified with a harness: `parent/data/` syncs `parent`, and `nope/data` throws without creating `nope/`. Covered by `test_first_start_makes_new_file_names_durable`, `test_first_start_without_data_dir_makes_directory_durable`, `test_repl_creates_missing_data_dir`.
+  - Trailing slash verified with the sync tracer: `data_dir = "db/"` syncs the parent, not `db` itself.
+  - Open: the "directory not empty" refusal should be "`ss_table_*.bin` present". `tests/options_test.py` fails 3 checks on it: `.DS_Store`, a leftover `temp_manifest.txt`, and a lone `wal.bin`. Its other 18 checks pass, covering validation, both `create_if_missing` values, one-level creation, trailing slashes, and the SSTable refusal.
+  - Open, small: the error messages read `Database does not exist: (create_if_missing is false)/path`, with the hint glued to the path. The "positive … including 0" comment and the constructor's comment (which says the WAL opens first) are out of date.
 
 ### WAL durability detour (2026-10-03 → in progress)
 **How it started:** researching `fsync` for the benchmark raised "when `SET` returns `OK`, where does the WAL record actually live?" `Wal::write()` made nine `fstream::write()` calls and never flushed; the only `close()` calls were in `truncate()` and the destructor. A `kill -9` experiment (SET 3 keys → kill → restart → GET) **lost all 3 acknowledged keys** — they were still in the stream's user-space buffer. The Phase 6 "two-process WAL-recovery test" had passed only because that first process exited via `EXIT`, running the destructor which flushed the buffer — it proved recovery after a *clean shutdown*, never after a crash.
@@ -545,7 +552,9 @@ mewDb/
 │   ├── command_surface_test.py ← all commands across flushes/restart/COMPACT (same invocation)
 │   ├── crash_stress_test.py   ← randomized SIGKILL crash-consistency test (MEWDB_CRASH_TRIALS/SEED env vars)
 │   ├── durability_test.py     ← sync/rename/unlink order on create, open, flush, compact (macOS tracer)
-│   └── sync_trace.c           ← the tracer durability_test.py injects with DYLD_INSERT_LIBRARIES
+│   ├── sync_trace.c           ← the tracer durability_test.py injects with DYLD_INSERT_LIBRARIES
+│   ├── options_test.py        ← compiles + runs options_test.cpp (python3 tests/options_test.py [source-root])
+│   └── options_test.cpp       ← DbEngine opened directly with different Options (validation, create_if_missing)
 ├── data/                  ← runtime output: wal.bin, ss_table_N.bin (v2 format), manifest.txt — gitignored wholesale
 └── build/                 ← generated by cmake (gitignored)
 ```
