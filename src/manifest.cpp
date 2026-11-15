@@ -1,6 +1,7 @@
 #include "manifest.h"
 #include "constants.h"
 #include "file_io.h"
+#include "file_names.h"
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -45,7 +46,7 @@ std::vector<uint64_t> subtract_vectors(const std::vector<uint64_t> &curr, const 
 // count (throws on a wrong magic). Otherwise creates an empty manifest there with next index 0.
 Manifest::Manifest(std::filesystem::path manifest_path, bool manifest_already_present){
     manifest_file_name = manifest_path.string();
-    temp_manifest_file_name = (manifest_path.parent_path() / MANIFEST_TEMP_FILE_NAME).string();
+    temp_manifest_file_name = temp_manifest_file_path(manifest_path.parent_path()).string();
 
     if (manifest_already_present) {
         //manifest already exists
@@ -171,7 +172,7 @@ bool Manifest::write_manifest(uint64_t next_index, const std::vector<uint64_t> &
     if (!temp_manifest) {
         return false;
     }
-    bool written = write_bytes(temp_manifest, contents.data(), contents.size()) && sync_file(temp_manifest);
+    bool written = write_bytes(temp_manifest, contents.data(), contents.size()) && sync_file(temp_manifest, WalSyncLevel::power_loss);
     if (std::fclose(temp_manifest) != 0 || !written) {
         return false;
     }

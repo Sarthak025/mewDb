@@ -4,12 +4,15 @@
 #include "constants.h"
 #include "manifest.h"
 #include "file_io.h"
+#include "file_names.h"
 
 #include <cerrno>
 #include <iostream>
 #include <stdexcept>
 #include <memory>
 #include <filesystem>
+#include <set>
+#include <string>
 #include <system_error>
 
 
@@ -30,7 +33,7 @@ void validate_options(const Options &options) {
         throw std::invalid_argument("data_dir must not be empty");
     }
 
-    // we allow any positive memtable size including 0
+    // Any mem_table_size_limit is accepted: 0 behaves like 1 (every write flushes).
 
     if (!is_known_sync_level(options.wal_sync)) {
         throw std::invalid_argument("wal_sync: unknown sync level");
@@ -38,11 +41,20 @@ void validate_options(const Options &options) {
 
 }
 
+bool is_allowed_without_manifest(const std::string &file_name) {
+
+    static const std::set<std::string> allowed = {
+        ".DS_Store",              
+        MANIFEST_TEMP_FILE_NAME,
+    };
+
+    return allowed.count(file_name) > 0;
+}
+
 } // namespace
 
 
-// Opens the WAL and replays it into curr_mem_table, then loads (or creates) the manifest.
-// Throws if either file can't be opened or the WAL can't be recovered.
+// Validates the options, then opens the database in data_dir: loads manifest, opens WAL and replays it into curr_mem_table
 DbEngine::DbEngine(Options entered_options) : options(entered_options) {
 
     validate_options(options);
@@ -66,8 +78,8 @@ DbEngine::DbEngine(Options entered_options) : options(entered_options) {
     }
 
 
-    const auto manifest_path = dir / MANIFEST_FILE_NAME;
-    const auto wal_path = dir / WAL_FILE_NAME;
+    const auto manifest_path = manifest_file_path(dir);
+    const auto wal_path = wal_file_path(dir);
     const bool manifest_already_present = fs::exists(manifest_path);
 
     if (manifest_already_present) {
@@ -79,8 +91,11 @@ DbEngine::DbEngine(Options entered_options) : options(entered_options) {
             throw std::runtime_error("Database manifest is missing: " + manifest_path.string() + " (create_if_missing is false)");
         }
 
-        if (!fs::is_empty(dir)) {
-            throw std::runtime_error("Cannot create database in a nonempty directory without a manifest: " + dir.string());
+        for (const auto &entry : fs::directory_iterator(dir)) {
+            const std::string file_name = entry.path().filename().string();
+            if (!is_allowed_without_manifest(file_name)) {
+                throw std::runtime_error("Cannot create database in " + dir.string() + ": it has no manifest but contains " + file_name);
+            }
         }
 
         if (!sync_parent_directory(dir.string())) {
@@ -117,7 +132,7 @@ void DbEngine::recover_del(const std::string &key){
     curr_mem_table[key] = std::nullopt;
 }
 
-// Logs the write to the WAL, puts key=val into curr_mem_table. Flushes the MemTable to a new SSTable once mem_table_size reaches MEM_TABLE_SIZE_LIMIT.
+// Logs the write to the WAL, puts key=val into curr_mem_table. Flushes the MemTable to a new SSTable once mem_table_size reaches options.mem_table_size_limit.
 // Throws if the WAL write or the flush fails.
 void DbEngine::set(const std::string &key, const std::string &val){
     if (!wal_instance->write(Operation::set, key, val)) {
@@ -146,7 +161,7 @@ std::optional<std::string> DbEngine::get(const std::string &key){
     // Check in SS_Tables
     std::vector<uint64_t> ss_table_indices = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_indices.rbegin(); it != ss_table_indices.rend(); ++it){
-        SsTable curr_ss_table(*it, OpenMode::read);
+        SsTable curr_ss_table(ss_table_file_path(options.data_dir, *it), *it, OpenMode::read);
         LookupResult result = curr_ss_table.get_value_from_ss_table(key);
 
         if(result.status == LookupStatus::not_found) continue;
@@ -194,7 +209,7 @@ bool DbEngine::exists_in_curr_mem_table(const std::string &key){
 
 // Checks if the memtable size is over the limit, and triggers a flush
 void DbEngine::check_mem_table_size_to_flush(){
-    if(mem_table_size >= MEM_TABLE_SIZE_LIMIT){
+    if(mem_table_size >= options.mem_table_size_limit){
         if(!(this->flush())){
             throw std::runtime_error("Error in flushing to disk...");
         }
@@ -212,7 +227,7 @@ std::vector<std::string> DbEngine::keys(){
     std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
-        SsTable curr_ss_table(i, OpenMode::read);
+        SsTable curr_ss_table(ss_table_file_path(options.data_dir, i), i, OpenMode::read);
         std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_keys_from_ss_table();
         
         // merge to temp map
@@ -250,7 +265,7 @@ std::vector<std::pair<std::string, std::optional<std::string>>> DbEngine::range(
     std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
-        SsTable curr_ss_table(i, OpenMode::read);
+        SsTable curr_ss_table(ss_table_file_path(options.data_dir, i), i, OpenMode::read);
         std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_range_from_ss_table(start, end);
         
         // merge to temp map
@@ -281,7 +296,7 @@ std::vector<std::pair<std::string, std::optional<std::string>>> DbEngine::prefix
     std::vector<uint64_t> ss_table_idxs = manifest_instance->get_ss_table_indices();
     for (auto it = ss_table_idxs.rbegin(); it != ss_table_idxs.rend(); it++){
         auto i = *it;
-        SsTable curr_ss_table(i, OpenMode::read);
+        SsTable curr_ss_table(ss_table_file_path(options.data_dir, i), i, OpenMode::read);
         std::vector<std::pair<std::string, std::optional<std::string>>> ss_table_records = curr_ss_table.get_prefix_from_ss_table(prefix);
         
         // merge to temp map
@@ -316,7 +331,7 @@ bool DbEngine::compact(){
 
     for (auto it = curr_ss_table_indices.rbegin(); it != curr_ss_table_indices.rend(); it++){
         auto i = *it;
-        SsTable curr_ss_table(i, OpenMode::read);
+        SsTable curr_ss_table(ss_table_file_path(options.data_dir, i), i, OpenMode::read);
         SsTableData curr_data = curr_ss_table.read_ss_table();
 
         for (const auto &curr_record : curr_data.records){
@@ -342,8 +357,7 @@ bool DbEngine::compact(){
 
         // delete old tables
         for(auto idx : curr_ss_table_indices){
-            std::string curr_ss_table_name = SS_TABLE_FILE_NAME + "_" + std::to_string(idx) + ".bin";
-            if(!std::filesystem::remove(curr_ss_table_name)){
+            if(!std::filesystem::remove(ss_table_file_path(options.data_dir, idx))){
                 return false;
             }
         }
@@ -353,7 +367,7 @@ bool DbEngine::compact(){
     uint64_t new_index = manifest_instance->get_next_ss_table_index();
     
     // create 1 big new table copy data to big table
-    SsTable new_ss_table(new_index,OpenMode::write);
+    SsTable new_ss_table(ss_table_file_path(options.data_dir, new_index), new_index, OpenMode::write);
     if(!new_ss_table.write_to_ss_table(full_data)){
         return false;
     }
@@ -365,8 +379,7 @@ bool DbEngine::compact(){
 
     // delete old tables
     for(auto idx : curr_ss_table_indices){
-        std::string curr_ss_table_name = SS_TABLE_FILE_NAME + "_" + std::to_string(idx) + ".bin";
-        if(!std::filesystem::remove(curr_ss_table_name)){
+        if(!std::filesystem::remove(ss_table_file_path(options.data_dir, idx))){
             return false;
         }
     }
@@ -379,7 +392,7 @@ bool DbEngine::compact(){
 // the WAL, then empties curr_mem_table. Stops and returns false at the first step that fails.
 bool DbEngine::flush(){
     uint64_t ss_table_index = manifest_instance->get_next_ss_table_index();
-    SsTable curr_ss_table(ss_table_index, OpenMode::write);
+    SsTable curr_ss_table(ss_table_file_path(options.data_dir, ss_table_index), ss_table_index, OpenMode::write);
 
     if (!curr_ss_table.write_to_ss_table(curr_mem_table)) {
         return false;

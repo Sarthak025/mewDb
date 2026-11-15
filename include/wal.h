@@ -14,6 +14,7 @@ class DbEngine;
 class Wal {
 private:
 	std::string wal_filename;
+	WalSyncLevel sync_level; // per-record sync in write(); recovery and truncate() always sync fully
 	std::unique_ptr<std::FILE, decltype(&std::fclose)> wal_log_file{nullptr, &std::fclose};
 	uint64_t index = 0;
 	bool write_failed = false;

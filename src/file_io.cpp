@@ -15,13 +15,17 @@
 namespace {
 
 #if !defined(_WIN32)
-// Forces fd's data to stable storage: F_FULLFSYNC on macOS (also empties the drive's own cache),
-// fsync elsewhere. Retries if a signal interrupts it (EINTR). True on success.
-bool sync_descriptor(int fd) {
+// Forces fd's data to the drive with fsync. With drive_cache, also empties the drive's own cache:
+// F_FULLFSYNC on macOS, where fsync stops short of that; elsewhere fsync already does both.
+// Retries if a signal interrupts it (EINTR). True on success.
+bool sync_descriptor(int fd, bool drive_cache) {
+#if !defined(__APPLE__)
+	(void)drive_cache;
+#endif
 	int result;
 	do {
 #if defined(__APPLE__)
-		result = ::fcntl(fd, F_FULLFSYNC);
+		result = drive_cache ? ::fcntl(fd, F_FULLFSYNC) : ::fsync(fd);
 #else
 		result = ::fsync(fd);
 #endif
@@ -51,11 +55,15 @@ FileOffset file_position(std::FILE *file) {
 	return position;
 }
 
-// Pushes file's stdio buffer to the OS (fflush), then forces it to stable storage.
-// False if the stream already had an error or either step fails.
-bool sync_file(std::FILE *file) {
+// Pushes file's stdio buffer to the OS (fflush), then as far as level asks: process_crash stops there,
+// os_crash adds fsync, and power_loss also empties the drive's cache. An unknown level gets power_loss,
+// never less. False if the stream already had an error or any step fails.
+bool sync_file(std::FILE *file, WalSyncLevel level) {
 	if (std::ferror(file) || std::fflush(file) != 0) {
 		return false;
+	}
+	if (level == WalSyncLevel::process_crash) {
+		return true;
 	}
 
 #if defined(_WIN32)
@@ -63,7 +71,7 @@ bool sync_file(std::FILE *file) {
 	return fd != -1 && ::_commit(fd) == 0;
 #else
 	const int fd = ::fileno(file);
-	return fd != -1 && sync_descriptor(fd);
+	return fd != -1 && sync_descriptor(fd, level != WalSyncLevel::os_crash);
 #endif
 }
 
@@ -89,7 +97,7 @@ bool sync_parent_directory(const std::string &file_path) {
 		return false;
 	}
 
-	const bool synced = sync_descriptor(fd);
+	const bool synced = sync_descriptor(fd, true);
 	const int sync_errno = errno;
 	::close(fd);
 	errno = sync_errno;

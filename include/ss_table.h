@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -101,7 +102,7 @@ private:
 	std::unique_ptr<std::FILE, decltype(&std::fclose)> ss_table_write_file{nullptr, &std::fclose}; // write mode: FILE* so it can be synced
 
     public:
-	SsTable(uint64_t table_index, OpenMode mode);
+	SsTable(std::filesystem::path file_path, uint64_t table_index, OpenMode mode);
 	~SsTable();
     
     bool write_to_ss_table(const std::map<std::string, std::optional<std::string>> &mem_table);

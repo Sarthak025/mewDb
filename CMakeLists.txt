@@ -15,6 +15,7 @@ add_executable(
     src/ss_table.cpp
     src/manifest.cpp
     src/file_io.cpp
+    src/file_names.cpp
 )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

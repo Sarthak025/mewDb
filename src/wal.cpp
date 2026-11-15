@@ -99,9 +99,8 @@ uint32_t calc_record_checksum(const WalData &record, uint32_t header_checksum) {
 	return crc;
 }
 
-// Opens wal_path for reading and appending (creating it if missing), then syncs its directory so a newly
-// created file survives a power loss. Throws std::system_error if either step fails.
-Wal::Wal(std::filesystem::path wal_path, WalSyncLevel wal_sync) : wal_filename(wal_path.string()) {
+// Opens wal_path for reading and appending (creating it if missing), then syncs its directory
+Wal::Wal(std::filesystem::path wal_path, WalSyncLevel wal_sync) : wal_filename(wal_path.string()), sync_level(wal_sync) {
 	wal_log_file.reset(std::fopen(wal_filename.c_str(), "a+b"));
 	if (!wal_log_file) {
 		throw std::system_error(errno, std::generic_category(), "Cannot open WAL");
@@ -112,7 +111,7 @@ Wal::Wal(std::filesystem::path wal_path, WalSyncLevel wal_sync) : wal_filename(w
 	}
 }
 
-// Appends one record (header, header CRC, key, value, record CRC), then flushes and syncs it to disk.
+// Appends one record (header, header CRC, key, value, record CRC), then flushes and syncs it
 // Returns false without writing if an earlier write failed or the arguments are invalid. A write or
 // sync failure latches write_failed, so every later write fails too. On success, index goes up by 1.
 bool Wal::write(Operation operation, const std::string &key, const std::string &val){
@@ -156,7 +155,7 @@ bool Wal::write(Operation operation, const std::string &key, const std::string &
 		!write_bytes(file, key.data(), key_len) ||
 		!write_bytes(file, val.data(), val_len) ||
 		!write_bytes(file, &record_crc, sizeof(record_crc)) ||
-		!sync_file(file)) {
+		!sync_file(file, sync_level)) {
 		
 		write_failed = true;
 		return false;
@@ -272,7 +271,7 @@ void Wal::recover(DbEngine& db){
 		if (!seek_file(file, last_valid_end, SEEK_SET)) {
 			throw std::runtime_error("Cannot seek WAL after tail repair");
 		}
-		if (!sync_file(file)) {
+		if (!sync_file(file, WalSyncLevel::power_loss)) {
 			throw std::system_error(errno, std::generic_category(), "Cannot sync repaired WAL");
 		}
 
@@ -295,7 +294,7 @@ bool Wal::truncate() {
 		return false;
 	}
 	wal_log_file.reset(std::fopen(wal_filename.c_str(), "w+b"));
-	if (!wal_log_file || !sync_file(wal_log_file.get())) {
+	if (!wal_log_file || !sync_file(wal_log_file.get(), WalSyncLevel::power_loss)) {
 		return false;
 	}
 	file = wal_log_file.release();

@@ -16,7 +16,7 @@ class Manifest;
 
 struct Options {
 	std::filesystem::path data_dir = "data";
-	uint64_t mem_table_size_limit = MEM_TABLE_SIZE_LIMIT;
+	uint64_t mem_table_size_limit = DEFAULT_MEM_TABLE_SIZE_LIMIT;
 	WalSyncLevel wal_sync = WalSyncLevel::power_loss;
 	bool create_if_missing = false;
 };

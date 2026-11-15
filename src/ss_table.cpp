@@ -345,10 +345,9 @@ DataBlockData read_data_block_by_offset(std::fstream &ss_table_file, uint64_t of
 
 //______________________________________________________________________________________________________________________________________________________________________________________________________
 
-// Sets the file name to data/ss_table_<table_index>.bin. Read mode opens the existing file (throws if it
-// doesn't exist); write mode creates it, or empties an existing one (throws if it can't).
-SsTable::SsTable(uint64_t table_index, OpenMode mode){
-    ss_table_file_name = SS_TABLE_FILE_NAME + "_" + std::to_string(table_index) + ".bin";
+// Read mode opens the existing file, write mode creates it, or empties an existing one
+SsTable::SsTable(std::filesystem::path file_path, uint64_t table_index, OpenMode mode){
+    ss_table_file_name = file_path.string();
     ss_table_index = table_index;
     if(mode == OpenMode::read){
         if(std::filesystem::is_regular_file(ss_table_file_name)){
@@ -545,7 +544,7 @@ bool SsTable::write_to_ss_table(const std::map<std::string, std::optional<std::s
         return false;
     }
 
-    return sync_file(file) && sync_parent_directory(ss_table_file_name);
+    return sync_file(file, WalSyncLevel::power_loss) && sync_parent_directory(ss_table_file_name);
 }
 
 
